@@ -97,6 +97,8 @@ gdb -ex "target remote :1234"
 ralph_os/
 ├── Cargo.toml              # Project manifest
 ├── Makefile                # Build commands
+├── README.md               # This file
+├── ARCHITECTURE.md         # Technical architecture documentation
 ├── x86_64-ralph_os.json    # Custom target specification
 ├── .cargo/config.toml      # Build configuration
 ├── run.sh                  # Build and run script
@@ -104,6 +106,8 @@ ralph_os/
     ├── main.rs             # Kernel entry point
     └── serial.rs           # Serial port driver
 ```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 
 ## Roadmap
 
