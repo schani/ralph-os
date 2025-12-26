@@ -4,6 +4,16 @@ A simple x86_64 operating system written in Rust.
 
 ## Design Decisions
 
+### No External Dependencies
+
+Ralph OS is implemented entirely from scratch with **no external crates**. This includes:
+- Custom bootloader (16-bit → 32-bit → 64-bit mode transitions)
+- Custom serial driver (direct UART 16550 register access)
+- Custom memory allocator
+- All other OS components
+
+Only Rust's `core` library is used. The `alloc` crate is enabled once we have a custom allocator.
+
 ### Architecture
 - **Target**: x86_64 only
 - **Single core**: No SMP support
@@ -26,8 +36,10 @@ A simple x86_64 operating system written in Rust.
 - **No graphics**: Run with `qemu -display none -serial stdio`
 
 ### Bootloader
-- Uses the `bootloader` crate (v0.9)
-- Handles BIOS boot, setting up long mode, loading the kernel
+- Custom two-stage bootloader written in assembly
+- Stage 1: Boot sector (512 bytes), loads stage 2
+- Stage 2: Sets up protected mode, long mode, page tables, loads kernel
+- Identity-mapped page tables (physical = virtual addresses)
 
 ## Quick Start
 
@@ -43,14 +55,14 @@ make run
 
 ### Prerequisites
 
-1. **Rust nightly toolchain**
-2. **QEMU** for x86_64 emulation
-3. **bootimage** cargo subcommand
+1. **Rust nightly toolchain** (with `rust-src` and `llvm-tools-preview`)
+2. **NASM** assembler
+3. **QEMU** for x86_64 emulation
 
 Install everything with:
 ```bash
-# Install QEMU (Ubuntu/Debian)
-sudo apt install qemu-system-x86
+# Install system packages (Ubuntu/Debian)
+sudo apt install qemu-system-x86 nasm
 
 # Install Rust tools (run once)
 make setup
@@ -71,11 +83,11 @@ make setup
 
 ```bash
 # Build bootable image
-cargo bootimage --release
+make image
 
 # Run in QEMU
 qemu-system-x86_64 \
-  -drive format=raw,file=target/x86_64-ralph_os/release/bootimage-ralph_os.bin \
+  -drive format=raw,file=target/ralph_os.img \
   -serial stdio \
   -display none \
   -no-reboot
@@ -95,16 +107,20 @@ gdb -ex "target remote :1234"
 
 ```
 ralph_os/
-├── Cargo.toml              # Project manifest
+├── bootloader/
+│   ├── stage1.asm          # Boot sector (512 bytes, 16-bit)
+│   └── stage2.asm          # Mode transitions (16→32→64-bit)
+├── src/
+│   ├── main.rs             # Kernel entry point
+│   └── serial.rs           # Custom UART 16550 driver
+├── Cargo.toml              # Project manifest (no dependencies!)
 ├── Makefile                # Build commands
-├── README.md               # This file
-├── ARCHITECTURE.md         # Technical architecture documentation
+├── kernel.ld               # Kernel linker script
 ├── x86_64-ralph_os.json    # Custom target specification
 ├── .cargo/config.toml      # Build configuration
-├── run.sh                  # Build and run script
-└── src/
-    ├── main.rs             # Kernel entry point
-    └── serial.rs           # Serial port driver
+├── README.md               # This file
+├── ARCHITECTURE.md         # Technical architecture documentation
+└── run.sh                  # Build and run script
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.

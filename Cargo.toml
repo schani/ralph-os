@@ -3,18 +3,14 @@ name = "ralph_os"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-bootloader = "0.9"
-uart_16550 = "0.3"
-spin = "0.9"
-x86_64 = "0.14"
+# No external dependencies - everything is implemented from scratch
 
-[dependencies.lazy_static]
-version = "1.4"
-features = ["spin_no_std"]
+[dependencies]
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
+opt-level = 2
+lto = true

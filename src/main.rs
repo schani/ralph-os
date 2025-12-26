@@ -1,26 +1,57 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
-use bootloader::{entry_point, BootInfo};
-
 mod serial;
 
-entry_point!(kernel_main);
+use core::panic::PanicInfo;
 
-fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    serial_println!("Hello, Ralph OS!");
-    serial_println!("Kernel booted successfully.");
+/// Kernel entry point - called from bootloader
+/// Must be at 0x100000 (start of .text section)
+#[unsafe(naked)]
+#[no_mangle]
+#[link_section = ".text.boot"]
+pub unsafe extern "C" fn _start() -> ! {
+    // Set up a known-good stack and call kernel_main
+    core::arch::naked_asm!(
+        "mov rsp, 0x90000",     // Set stack pointer
+        "call kernel_main",     // Call Rust main
+        "2:",
+        "hlt",
+        "jmp 2b",
+    )
+}
 
+/// Main kernel function
+#[no_mangle]
+pub extern "C" fn kernel_main() -> ! {
+    // Initialize serial port
+    serial::init();
+
+    // Print welcome message
+    println!("Hello, Ralph OS!");
+    println!("Kernel loaded at 0x100000");
+    println!("Custom bootloader + kernel - no external dependencies!");
+
+    // Halt
     loop {
-        x86_64::instructions::hlt();
+        hlt();
     }
 }
 
+/// Halt the CPU until the next interrupt
+#[inline]
+fn hlt() {
+    unsafe {
+        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Panic handler
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    serial_println!("KERNEL PANIC: {}", info);
+    println!("\n!!! KERNEL PANIC !!!");
+    println!("{}", info);
     loop {
-        x86_64::instructions::hlt();
+        hlt();
     }
 }
