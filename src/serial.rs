@@ -1,6 +1,8 @@
-// Ralph OS Serial Port Driver
-// Custom implementation - no external dependencies
+//! Ralph OS Serial Port Driver
+//!
+//! Custom UART 16550 implementation - no external dependencies.
 
+use crate::io::{inb, outb};
 use core::fmt;
 
 // COM1 port address
@@ -17,30 +19,6 @@ const LINE_STATUS: u16 = 5;     // Line status
 // Line status bits
 const LSR_DATA_READY: u8 = 0x01;
 const LSR_TX_EMPTY: u8 = 0x20;
-
-/// Port I/O: Read byte from port
-#[inline]
-unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    core::arch::asm!(
-        "in al, dx",
-        out("al") value,
-        in("dx") port,
-        options(nomem, nostack, preserves_flags)
-    );
-    value
-}
-
-/// Port I/O: Write byte to port
-#[inline]
-unsafe fn outb(port: u16, value: u8) {
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
-}
 
 /// Serial port writer
 pub struct Serial {
@@ -131,7 +109,7 @@ impl Serial {
     }
 }
 
-impl fmt::Write for Serial {
+impl fmt::Write for &Serial {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         Serial::write_str(self, s);
         Ok(())
@@ -150,9 +128,8 @@ pub fn init() {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    // Safety: We're single-threaded, no locking needed yet
-    let mut serial = Serial::new(COM1);
-    serial.write_fmt(args).unwrap();
+    // Use the global SERIAL instance (single-threaded, no locking needed)
+    (&SERIAL).write_fmt(args).unwrap();
 }
 
 /// Print to serial port

@@ -3,6 +3,7 @@
 //! Configures the 8253/8254 PIT for time tracking at ~100 Hz.
 //! Uses interrupt-driven tick counting for accurate timekeeping.
 
+use crate::io::outb;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 // PIT I/O ports
@@ -16,17 +17,6 @@ const DIVISOR: u16 = (PIT_FREQUENCY / TARGET_HZ) as u16; // ~11932
 
 // Global tick counter (incremented by timer interrupt handler)
 static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Port I/O: Write byte to port
-#[inline]
-unsafe fn outb(port: u16, value: u8) {
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
-}
 
 /// Initialize the PIT timer
 ///

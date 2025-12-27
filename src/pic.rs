@@ -3,7 +3,7 @@
 //! Remaps the PIC to avoid conflicts with CPU exceptions and provides
 //! functions to manage hardware interrupts.
 
-use core::arch::asm;
+use crate::io::{inb, io_wait, outb};
 
 // PIC I/O ports
 const PIC1_COMMAND: u16 = 0x20;
@@ -20,37 +20,6 @@ const PIC_EOI: u8 = 0x20;
 // Interrupt vector offsets after remapping
 pub const PIC1_OFFSET: u8 = 32; // IRQ 0-7  -> interrupts 32-39
 pub const PIC2_OFFSET: u8 = 40; // IRQ 8-15 -> interrupts 40-47
-
-/// Port I/O: Read byte from port
-#[inline]
-unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    asm!(
-        "in al, dx",
-        out("al") value,
-        in("dx") port,
-        options(nomem, nostack, preserves_flags)
-    );
-    value
-}
-
-/// Port I/O: Write byte to port
-#[inline]
-unsafe fn outb(port: u16, value: u8) {
-    asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
-}
-
-/// Small delay for PIC operations
-#[inline]
-unsafe fn io_wait() {
-    // Write to unused port to create a small delay
-    outb(0x80, 0);
-}
 
 /// Initialize and remap the 8259 PICs
 ///

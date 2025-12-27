@@ -9,6 +9,7 @@ mod basic;
 mod context_switch;
 mod idt;
 mod interrupts;
+mod io;
 mod pic;
 mod scheduler;
 mod serial;
