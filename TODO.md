@@ -89,6 +89,22 @@ Issues identified during code review, with proposed solutions where applicable.
 
 ---
 
+## Low Priority - COMPLETED
+
+### 11. ~~Context Switch Doesn't Save SIMD State~~ ✓ DONE
+**Location:** `src/context_switch.rs`
+
+**Fixed:** Added comprehensive documentation warning that SIMD/SSE state is not preserved across context switches. Documents current mitigations (target spec disables advanced SSE) and future solutions (FXSAVE/FXRSTOR or soft-float).
+
+---
+
+### 12. ~~Bootloader Hardcoded Sector Limit~~ ✓ DONE
+**Location:** `Makefile`, `bootloader/stage2.asm:13`
+
+**Fixed:** Added kernel size check in Makefile that fails the build if kernel exceeds 102,400 bytes (200 sectors × 512 bytes). Build now reports kernel size and limit.
+
+---
+
 ## Low Priority / Future Work
 
 ### 10. No Stack Overflow Protection
@@ -119,34 +135,6 @@ impl Task {
 ```
 
 Check canaries periodically in scheduler.
-
----
-
-### 11. Context Switch Doesn't Save SIMD State
-**Location:** `src/context_switch.rs`
-
-**Problem:** Only callee-saved GPRs are preserved. SSE/AVX registers (XMM0-15, YMM0-15) are clobbered on context switch. The bootloader enables SSE at `stage2.asm:407-418`.
-
-**Solution:** Either:
-1. Save/restore XMM registers in `switch_context` (expensive, ~512 bytes per task)
-2. Use `FXSAVE`/`FXRSTOR` instructions
-3. Disable SSE entirely via target spec (if Rust core doesn't need it)
-
-For now, document that SIMD is not task-safe.
-
----
-
-### 12. Bootloader Hardcoded Sector Limit
-**Location:** `bootloader/stage2.asm:13`
-
-**Problem:**
-```asm
-KERNEL_SECTORS equ 200  ; ~100KB max kernel size
-```
-
-Kernel larger than 100KB silently truncates.
-
-**Solution:** Calculate required sectors from actual kernel size, or at minimum fail loudly if kernel exceeds limit during build.
 
 ---
 
