@@ -192,9 +192,16 @@ impl Scheduler {
         // Wake sleeping tasks
         self.wake_sleeping_tasks();
 
-        // Periodically reap finished tasks to free memory.
-        // Only reap if there are finished tasks to avoid the overhead.
-        if self.tasks.iter().any(|t| t.state == TaskState::Finished) {
+        // Check if current task is finished (exiting)
+        let current_is_finished = self.current < self.tasks.len()
+            && self.tasks[self.current].state == TaskState::Finished;
+
+        // Reap finished tasks, but NOT if the current task is finished.
+        // If we reap while current task is exiting, reap_finished_tasks() adjusts
+        // self.current, causing us to save context into the WRONG task's context
+        // slot, corrupting it. The current task will be reaped on the next
+        // schedule() call from another task.
+        if !current_is_finished && self.tasks.iter().any(|t| t.state == TaskState::Finished) {
             self.reap_finished_tasks();
         }
 
