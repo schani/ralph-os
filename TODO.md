@@ -75,30 +75,14 @@ Issues identified during code review, with proposed solutions where applicable.
 
 ---
 
-## Medium Priority
+### 8. ~~Unnecessary Box Around Scheduler~~ ✓ DONE
+**Location:** `src/scheduler.rs`
 
-### 8. Unnecessary Box Around Scheduler
-**Location:** `src/scheduler.rs:13, 168`
-
-**Problem:**
-```rust
-static mut SCHEDULER: Option<Box<Scheduler>> = None;
-// ...
-SCHEDULER = Some(Box::new(Scheduler::new()));
-```
-
-The scheduler is heap-allocated but never moved after initialization. Adds unnecessary indirection.
-
-**Solution:** Store directly:
-```rust
-static mut SCHEDULER: Option<Scheduler> = None;
-// ...
-SCHEDULER = Some(Scheduler::new());
-```
-
-Or with the `SchedulerCell` pattern from issue #2, avoid the Option entirely.
+**Fixed:** Resolved when implementing issue #2. The `SchedulerCell` pattern stores `Scheduler` directly in `UnsafeCell<Option<Scheduler>>` without heap allocation.
 
 ---
+
+## Medium Priority
 
 ### 9. BASIC Interpreter Clones Statements Every Step
 **Location:** `src/basic/interpreter.rs:146-152`
