@@ -143,7 +143,7 @@ impl Interpreter {
 
         let line_num = self.line_order[idx];
         let stmt = match self.program.get(&line_num) {
-            Some(s) => s.clone(),
+            Some(s) => s,
             None => {
                 self.running = false;
                 self.status = ExecutionStatus::Error("Line not found".into());
@@ -151,8 +151,14 @@ impl Interpreter {
             }
         };
 
-        // Execute the statement
-        match self.execute_statement(&stmt, line_num) {
+        // Execute the statement (split borrow: stmt from program, mutable state separate)
+        match execute_statement(
+            &mut self.variables,
+            &mut self.for_stack,
+            &self.line_order,
+            stmt,
+            line_num,
+        ) {
             Ok(action) => {
                 match action {
                     NextAction::Continue => {
@@ -194,200 +200,6 @@ impl Interpreter {
         self.status.clone()
     }
 
-    fn execute_statement(
-        &mut self,
-        stmt: &Statement,
-        current_line: u32,
-    ) -> Result<NextAction, String> {
-        match stmt {
-            Statement::Print(exprs) => {
-                for (i, expr) in exprs.iter().enumerate() {
-                    let value = self.eval_expr(expr)?;
-                    if i > 0 {
-                        crate::print!(" ");
-                    }
-                    crate::print!("{}", value);
-                }
-                crate::println!();
-                Ok(NextAction::Continue)
-            }
-
-            Statement::Let { var, value } => {
-                let val = self.eval_expr(value)?;
-                self.variables.insert(var.clone(), val);
-                Ok(NextAction::Continue)
-            }
-
-            Statement::If {
-                condition,
-                then_line,
-            } => {
-                let cond_val = self.eval_expr(condition)?;
-                if cond_val.is_truthy() {
-                    Ok(NextAction::Jump(*then_line))
-                } else {
-                    Ok(NextAction::Continue)
-                }
-            }
-
-            Statement::Goto(target) => Ok(NextAction::Jump(*target)),
-
-            Statement::For {
-                var,
-                start,
-                end,
-                step,
-            } => {
-                let start_val = self
-                    .eval_expr(start)?
-                    .as_integer()
-                    .ok_or("FOR start must be numeric")?;
-                let end_val = self
-                    .eval_expr(end)?
-                    .as_integer()
-                    .ok_or("FOR end must be numeric")?;
-                let step_val = self
-                    .eval_expr(step)?
-                    .as_integer()
-                    .ok_or("FOR step must be numeric")?;
-
-                // Set loop variable
-                self.variables.insert(var.clone(), Value::Integer(start_val));
-
-                // Find line after FOR (the body)
-                let body_line = self
-                    .line_order
-                    .iter()
-                    .find(|&&n| n > current_line)
-                    .copied()
-                    .unwrap_or(current_line);
-
-                // Push loop state
-                self.for_stack.push(ForState {
-                    var: var.clone(),
-                    end_value: end_val,
-                    step: step_val,
-                    body_line,
-                });
-
-                Ok(NextAction::Continue)
-            }
-
-            Statement::Next(var) => {
-                // Find matching FOR
-                let loop_idx = self
-                    .for_stack
-                    .iter()
-                    .rposition(|f| f.var == *var)
-                    .ok_or_else(|| alloc::format!("NEXT without FOR: {}", var))?;
-
-                let loop_state = self.for_stack[loop_idx].clone();
-                let current_val = self
-                    .variables
-                    .get(var)
-                    .and_then(|v| v.as_integer())
-                    .ok_or("Loop variable missing")?;
-
-                let next_val = current_val + loop_state.step;
-
-                // Check if loop should continue
-                let continue_loop = if loop_state.step > 0 {
-                    next_val <= loop_state.end_value
-                } else {
-                    next_val >= loop_state.end_value
-                };
-
-                if continue_loop {
-                    // Update variable and jump back to body
-                    self.variables.insert(var.clone(), Value::Integer(next_val));
-                    Ok(NextAction::Jump(loop_state.body_line))
-                } else {
-                    // Loop finished - pop and continue
-                    self.for_stack.remove(loop_idx);
-                    Ok(NextAction::Continue)
-                }
-            }
-
-            Statement::Sleep(expr) => {
-                let val = self.eval_expr(expr)?;
-                let ms = val.as_integer().ok_or("SLEEP requires numeric value")? as u64;
-                Ok(NextAction::Sleep(ms))
-            }
-
-            Statement::Rem => Ok(NextAction::Continue),
-
-            Statement::End => Ok(NextAction::End),
-        }
-    }
-
-    /// Evaluate an expression
-    fn eval_expr(&self, expr: &Expr) -> Result<Value, String> {
-        match expr {
-            Expr::Integer(n) => Ok(Value::Integer(*n)),
-            Expr::StringLit(s) => Ok(Value::String(s.clone())),
-            Expr::Variable(name) => self
-                .variables
-                .get(name)
-                .cloned()
-                .ok_or_else(|| alloc::format!("Undefined variable: {}", name)),
-            Expr::Negate(inner) => {
-                let val = self.eval_expr(inner)?;
-                match val {
-                    Value::Integer(n) => Ok(Value::Integer(-n)),
-                    Value::String(_) => Err("Cannot negate string".into()),
-                }
-            }
-            Expr::BinaryOp { left, op, right } => {
-                let l = self.eval_expr(left)?;
-                let r = self.eval_expr(right)?;
-                self.eval_binary_op(&l, op, &r)
-            }
-            Expr::Mem(arg) => {
-                let idx = self.eval_expr(arg)?.as_integer().ok_or("MEM requires numeric argument")?;
-                let (used, free) = allocator::get_heap_stats();
-                match idx {
-                    0 => Ok(Value::Integer(used as i64)),
-                    1 => Ok(Value::Integer(free as i64)),
-                    _ => Err("MEM: invalid argument (use 0 for used, 1 for free)".into()),
-                }
-            }
-        }
-    }
-
-    fn eval_binary_op(&self, l: &Value, op: &BinaryOp, r: &Value) -> Result<Value, String> {
-        // Handle string concatenation
-        if let (Value::String(ls), BinaryOp::Add, Value::String(rs)) = (l, op, r) {
-            let mut result = ls.clone();
-            result.push_str(rs);
-            return Ok(Value::String(result));
-        }
-
-        // Numeric operations
-        let lv = l.as_integer().ok_or("Type error in left operand")?;
-        let rv = r.as_integer().ok_or("Type error in right operand")?;
-
-        let result = match op {
-            BinaryOp::Add => Value::Integer(lv + rv),
-            BinaryOp::Sub => Value::Integer(lv - rv),
-            BinaryOp::Mul => Value::Integer(lv * rv),
-            BinaryOp::Div => {
-                if rv == 0 {
-                    return Err("Division by zero".into());
-                }
-                Value::Integer(lv / rv)
-            }
-            // Comparisons return 1 (true) or 0 (false)
-            BinaryOp::Eq => Value::Integer(if lv == rv { 1 } else { 0 }),
-            BinaryOp::Ne => Value::Integer(if lv != rv { 1 } else { 0 }),
-            BinaryOp::Lt => Value::Integer(if lv < rv { 1 } else { 0 }),
-            BinaryOp::Gt => Value::Integer(if lv > rv { 1 } else { 0 }),
-            BinaryOp::Le => Value::Integer(if lv <= rv { 1 } else { 0 }),
-            BinaryOp::Ge => Value::Integer(if lv >= rv { 1 } else { 0 }),
-        };
-
-        Ok(result)
-    }
-
     /// List the program
     pub fn list(&self) {
         for &line_num in &self.line_order {
@@ -399,7 +211,13 @@ impl Interpreter {
 
     /// Execute an immediate command (for REPL)
     pub fn execute_immediate(&mut self, stmt: &Statement) -> ExecutionStatus {
-        match self.execute_statement(stmt, 0) {
+        match execute_statement(
+            &mut self.variables,
+            &mut self.for_stack,
+            &self.line_order,
+            stmt,
+            0,
+        ) {
             Ok(NextAction::Continue) | Ok(NextAction::End) => ExecutionStatus::Ready,
             Ok(NextAction::Jump(_)) => ExecutionStatus::Error("Cannot GOTO in immediate mode".into()),
             Ok(NextAction::Sleep(ms)) => ExecutionStatus::Sleeping(ms),
@@ -414,6 +232,204 @@ enum NextAction {
     Jump(u32),
     Sleep(u64),
     End,
+}
+
+/// Execute a BASIC statement
+///
+/// Takes split borrows to avoid cloning the statement:
+/// - variables and for_stack are mutable state
+/// - line_order is needed for FOR loop body lookup
+/// - stmt is borrowed from the program BTreeMap
+fn execute_statement(
+    variables: &mut BTreeMap<String, Value>,
+    for_stack: &mut Vec<ForState>,
+    line_order: &[u32],
+    stmt: &Statement,
+    current_line: u32,
+) -> Result<NextAction, String> {
+    match stmt {
+        Statement::Print(exprs) => {
+            for (i, expr) in exprs.iter().enumerate() {
+                let value = eval_expr(variables, expr)?;
+                if i > 0 {
+                    crate::print!(" ");
+                }
+                crate::print!("{}", value);
+            }
+            crate::println!();
+            Ok(NextAction::Continue)
+        }
+
+        Statement::Let { var, value } => {
+            let val = eval_expr(variables, value)?;
+            variables.insert(var.clone(), val);
+            Ok(NextAction::Continue)
+        }
+
+        Statement::If {
+            condition,
+            then_line,
+        } => {
+            let cond_val = eval_expr(variables, condition)?;
+            if cond_val.is_truthy() {
+                Ok(NextAction::Jump(*then_line))
+            } else {
+                Ok(NextAction::Continue)
+            }
+        }
+
+        Statement::Goto(target) => Ok(NextAction::Jump(*target)),
+
+        Statement::For {
+            var,
+            start,
+            end,
+            step,
+        } => {
+            let start_val = eval_expr(variables, start)?
+                .as_integer()
+                .ok_or("FOR start must be numeric")?;
+            let end_val = eval_expr(variables, end)?
+                .as_integer()
+                .ok_or("FOR end must be numeric")?;
+            let step_val = eval_expr(variables, step)?
+                .as_integer()
+                .ok_or("FOR step must be numeric")?;
+
+            // Set loop variable
+            variables.insert(var.clone(), Value::Integer(start_val));
+
+            // Find line after FOR (the body)
+            let body_line = line_order
+                .iter()
+                .find(|&&n| n > current_line)
+                .copied()
+                .unwrap_or(current_line);
+
+            // Push loop state
+            for_stack.push(ForState {
+                var: var.clone(),
+                end_value: end_val,
+                step: step_val,
+                body_line,
+            });
+
+            Ok(NextAction::Continue)
+        }
+
+        Statement::Next(var) => {
+            // Find matching FOR
+            let loop_idx = for_stack
+                .iter()
+                .rposition(|f| f.var == *var)
+                .ok_or_else(|| alloc::format!("NEXT without FOR: {}", var))?;
+
+            let loop_state = for_stack[loop_idx].clone();
+            let current_val = variables
+                .get(var)
+                .and_then(|v| v.as_integer())
+                .ok_or("Loop variable missing")?;
+
+            let next_val = current_val + loop_state.step;
+
+            // Check if loop should continue
+            let continue_loop = if loop_state.step > 0 {
+                next_val <= loop_state.end_value
+            } else {
+                next_val >= loop_state.end_value
+            };
+
+            if continue_loop {
+                // Update variable and jump back to body
+                variables.insert(var.clone(), Value::Integer(next_val));
+                Ok(NextAction::Jump(loop_state.body_line))
+            } else {
+                // Loop finished - pop and continue
+                for_stack.remove(loop_idx);
+                Ok(NextAction::Continue)
+            }
+        }
+
+        Statement::Sleep(expr) => {
+            let val = eval_expr(variables, expr)?;
+            let ms = val.as_integer().ok_or("SLEEP requires numeric value")? as u64;
+            Ok(NextAction::Sleep(ms))
+        }
+
+        Statement::Rem => Ok(NextAction::Continue),
+
+        Statement::End => Ok(NextAction::End),
+    }
+}
+
+/// Evaluate a BASIC expression
+fn eval_expr(variables: &BTreeMap<String, Value>, expr: &Expr) -> Result<Value, String> {
+    match expr {
+        Expr::Integer(n) => Ok(Value::Integer(*n)),
+        Expr::StringLit(s) => Ok(Value::String(s.clone())),
+        Expr::Variable(name) => variables
+            .get(name)
+            .cloned()
+            .ok_or_else(|| alloc::format!("Undefined variable: {}", name)),
+        Expr::Negate(inner) => {
+            let val = eval_expr(variables, inner)?;
+            match val {
+                Value::Integer(n) => Ok(Value::Integer(-n)),
+                Value::String(_) => Err("Cannot negate string".into()),
+            }
+        }
+        Expr::BinaryOp { left, op, right } => {
+            let l = eval_expr(variables, left)?;
+            let r = eval_expr(variables, right)?;
+            eval_binary_op(&l, op, &r)
+        }
+        Expr::Mem(arg) => {
+            let idx = eval_expr(variables, arg)?
+                .as_integer()
+                .ok_or("MEM requires numeric argument")?;
+            let (used, free) = allocator::get_heap_stats();
+            match idx {
+                0 => Ok(Value::Integer(used as i64)),
+                1 => Ok(Value::Integer(free as i64)),
+                _ => Err("MEM: invalid argument (use 0 for used, 1 for free)".into()),
+            }
+        }
+    }
+}
+
+/// Evaluate a binary operation
+fn eval_binary_op(l: &Value, op: &BinaryOp, r: &Value) -> Result<Value, String> {
+    // Handle string concatenation
+    if let (Value::String(ls), BinaryOp::Add, Value::String(rs)) = (l, op, r) {
+        let mut result = ls.clone();
+        result.push_str(rs);
+        return Ok(Value::String(result));
+    }
+
+    // Numeric operations
+    let lv = l.as_integer().ok_or("Type error in left operand")?;
+    let rv = r.as_integer().ok_or("Type error in right operand")?;
+
+    let result = match op {
+        BinaryOp::Add => Value::Integer(lv + rv),
+        BinaryOp::Sub => Value::Integer(lv - rv),
+        BinaryOp::Mul => Value::Integer(lv * rv),
+        BinaryOp::Div => {
+            if rv == 0 {
+                return Err("Division by zero".into());
+            }
+            Value::Integer(lv / rv)
+        }
+        // Comparisons return 1 (true) or 0 (false)
+        BinaryOp::Eq => Value::Integer(if lv == rv { 1 } else { 0 }),
+        BinaryOp::Ne => Value::Integer(if lv != rv { 1 } else { 0 }),
+        BinaryOp::Lt => Value::Integer(if lv < rv { 1 } else { 0 }),
+        BinaryOp::Gt => Value::Integer(if lv > rv { 1 } else { 0 }),
+        BinaryOp::Le => Value::Integer(if lv <= rv { 1 } else { 0 }),
+        BinaryOp::Ge => Value::Integer(if lv >= rv { 1 } else { 0 }),
+    };
+
+    Ok(result)
 }
 
 /// Format a statement for LIST output
