@@ -1,6 +1,25 @@
 //! Context switching assembly for cooperative multitasking
 //!
 //! Switches execution between tasks by saving/restoring callee-saved registers.
+//!
+//! # SIMD State Warning
+//!
+//! This context switch implementation only saves/restores general-purpose
+//! callee-saved registers (r15, r14, r13, r12, rbx, rbp, rsp). It does NOT
+//! save SSE/AVX state (XMM0-15, YMM0-15).
+//!
+//! **Implications:**
+//! - SIMD registers are NOT preserved across context switches
+//! - Tasks using SIMD/floating-point may see corrupted values after yielding
+//! - The Rust compiler may use SSE for memcpy/floating-point operations
+//!
+//! **Current mitigations:**
+//! - Target spec disables advanced SSE extensions (-sse3, -sse4, -avx, etc.)
+//! - Most BASIC interpreter code uses only integer operations
+//!
+//! **Future solutions (if SIMD support needed):**
+//! - Use FXSAVE/FXRSTOR to save 512 bytes of FPU/SSE state per task
+//! - Or add `+soft-float` to target spec to disable hardware FP entirely
 
 use crate::task::Context;
 

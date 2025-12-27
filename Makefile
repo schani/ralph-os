@@ -14,6 +14,10 @@ NASM            = nasm
 OBJCOPY         = $(shell find ~/.rustup -name 'llvm-objcopy' 2>/dev/null | head -1)
 QEMU            = qemu-system-x86_64
 
+# Kernel size limit (must match KERNEL_SECTORS in stage2.asm)
+# 200 sectors * 512 bytes = 102400 bytes
+MAX_KERNEL_SIZE = 102400
+
 # Default target
 all: image
 
@@ -41,6 +45,15 @@ $(KERNEL): src/*.rs Cargo.toml kernel.ld
 # Convert kernel ELF to flat binary
 $(KERNEL_BIN): $(KERNEL)
 	$(OBJCOPY) -O binary $< $@
+	@KSIZE=$$(stat -c %s $@); \
+	if [ $$KSIZE -gt $(MAX_KERNEL_SIZE) ]; then \
+		echo "ERROR: Kernel too large! $$KSIZE bytes > $(MAX_KERNEL_SIZE) bytes"; \
+		echo "Increase KERNEL_SECTORS in stage2.asm or reduce kernel size."; \
+		rm -f $@; \
+		exit 1; \
+	else \
+		echo "Kernel size: $$KSIZE bytes (limit: $(MAX_KERNEL_SIZE))"; \
+	fi
 
 kernel: $(KERNEL_BIN)
 
