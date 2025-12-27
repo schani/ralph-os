@@ -1,7 +1,7 @@
 //! Task structure and context for cooperative multitasking
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::executable;
+use crate::program_alloc;
 
 /// Unique identifier for each task
 pub type TaskId = usize;
@@ -69,8 +69,10 @@ pub struct Task {
     pub state: TaskState,
     /// Saved CPU context
     pub context: Context,
-    /// Task's private stack (heap-allocated)
-    pub stack: Vec<u8>,
+    /// Stack base address (in program region)
+    pub stack_base: usize,
+    /// Stack size in bytes
+    pub stack_size: usize,
     /// Timestamp (in ticks) when sleeping task should wake
     pub wake_at: u64,
 }
@@ -96,13 +98,23 @@ extern "C" fn task_entry_trampoline() -> ! {
 
 impl Task {
     /// Create a new task with the given entry point
-    pub fn new(id: TaskId, name: &'static str, entry: fn()) -> Self {
-        // Allocate stack
-        let stack = vec![0u8; STACK_SIZE];
+    ///
+    /// Returns None if stack allocation fails.
+    pub fn new(id: TaskId, name: &'static str, entry: fn()) -> Option<Self> {
+        // Allocate stack from program region
+        let stack_base = program_alloc::allocate(STACK_SIZE)?;
+
+        // Zero-initialize the stack
+        unsafe {
+            core::ptr::write_bytes(stack_base as *mut u8, 0, STACK_SIZE);
+        }
+
+        // Register the stack allocation for cleanup when task exits
+        executable::register_task_stack(id, stack_base, STACK_SIZE);
 
         // Set up initial stack for first context switch
         // Stack grows down, so start at high address
-        let stack_top = stack.as_ptr() as usize + STACK_SIZE;
+        let stack_top = stack_base + STACK_SIZE;
 
         // Align stack to 16 bytes (x86_64 ABI requirement)
         // We need 16-byte alignment BEFORE the call instruction pushes the return address
@@ -125,13 +137,14 @@ impl Task {
             ..Default::default()
         };
 
-        Task {
+        Some(Task {
             id,
             name,
             state: TaskState::Ready,
             context,
-            stack,
+            stack_base,
+            stack_size: STACK_SIZE,
             wake_at: 0,
-        }
+        })
     }
 }

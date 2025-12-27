@@ -105,10 +105,14 @@ pub extern "C" fn kernel_main() -> ! {
 
     // Spawn BASIC tasks
     println!("\nSpawning tasks...");
-    scheduler::spawn("memstats", basic::memstats_task);
-    println!("  - memstats: Memory monitor (BASIC)");
-    scheduler::spawn("basic-repl", basic::repl_task);
-    println!("  - basic-repl: Interactive BASIC interpreter");
+    match scheduler::spawn("memstats", basic::memstats_task) {
+        Some(_) => println!("  - memstats: Memory monitor (BASIC)"),
+        None => println!("  - memstats: FAILED (out of memory)"),
+    }
+    match scheduler::spawn("basic-repl", basic::repl_task) {
+        Some(_) => println!("  - basic-repl: Interactive BASIC interpreter"),
+        None => println!("  - basic-repl: FAILED (out of memory)"),
+    }
 
     println!("\nStarting scheduler...\n");
 

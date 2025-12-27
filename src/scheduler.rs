@@ -102,14 +102,16 @@ impl Scheduler {
     }
 
     /// Spawn a new task
-    pub fn spawn(&mut self, name: &'static str, entry: fn()) -> TaskId {
+    ///
+    /// Returns Some(TaskId) on success, None if stack allocation fails.
+    pub fn spawn(&mut self, name: &'static str, entry: fn()) -> Option<TaskId> {
         let id = self.next_id;
         self.next_id += 1;
 
-        let task = Task::new(id, name, entry);
+        let task = Task::new(id, name, entry)?;
         self.tasks.push(task);
 
-        id
+        Some(id)
     }
 
     /// Wake any sleeping tasks whose wake time has passed
@@ -282,7 +284,9 @@ pub fn init() {
 }
 
 /// Spawn a new task
-pub fn spawn(name: &'static str, entry: fn()) -> TaskId {
+///
+/// Returns Some(TaskId) on success, None if stack allocation fails.
+pub fn spawn(name: &'static str, entry: fn()) -> Option<TaskId> {
     SCHEDULER.with(|sched| sched.spawn(name, entry))
 }
 
@@ -340,4 +344,15 @@ pub fn exit_task() {
 /// Get information about running tasks (for debugging)
 pub fn task_count() -> usize {
     SCHEDULER.with(|sched| sched.tasks.len())
+}
+
+/// Get the ID of the currently running task
+pub fn current_task_id() -> Option<TaskId> {
+    SCHEDULER.with(|sched| {
+        if sched.current < sched.tasks.len() {
+            Some(sched.tasks[sched.current].id)
+        } else {
+            None
+        }
+    })
 }

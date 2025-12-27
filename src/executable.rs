@@ -84,14 +84,34 @@ impl From<elf::ElfError> for ExecError {
     }
 }
 
+/// All memory allocations belonging to a single task
+struct TaskAllocations {
+    /// Stack allocation (base, size) - always present
+    stack: (usize, usize),
+    /// Program code/data allocation - only for loaded ELF programs
+    program: Option<(usize, usize)>,
+    /// User heap allocations via alloc() API - list of (addr, size)
+    heap_blocks: Vec<(usize, usize)>,
+}
+
+impl TaskAllocations {
+    fn new(stack_base: usize, stack_size: usize) -> Self {
+        TaskAllocations {
+            stack: (stack_base, stack_size),
+            program: None,
+            heap_blocks: Vec::new(),
+        }
+    }
+}
+
 /// Executable registry state
 struct ExecRegistry {
     /// Address of the executable table header
     table_addr: usize,
     /// Number of executables available
     exec_count: usize,
-    /// Mapping from task ID to loaded program info (for cleanup)
-    loaded_programs: BTreeMap<TaskId, (usize, usize)>, // (addr, size)
+    /// Per-task memory allocations (stack + program + heap)
+    task_allocations: BTreeMap<TaskId, TaskAllocations>,
 }
 
 impl ExecRegistry {
@@ -99,7 +119,7 @@ impl ExecRegistry {
         ExecRegistry {
             table_addr: 0,
             exec_count: 0,
-            loaded_programs: BTreeMap::new(),
+            task_allocations: BTreeMap::new(),
         }
     }
 }
@@ -342,32 +362,107 @@ pub fn load(name: &str) -> Result<LoadedProgram, ExecError> {
     })
 }
 
-/// Register a loaded program with a task ID for cleanup
-pub fn register_task(task_id: TaskId, program: &LoadedProgram) {
+/// Register a task's stack allocation
+///
+/// Called when a task is created. Must be called before the task runs.
+pub fn register_task_stack(task_id: TaskId, stack_base: usize, stack_size: usize) {
     REGISTRY.with(|reg| {
-        reg.loaded_programs
-            .insert(task_id, (program.base_addr, program.size));
+        reg.task_allocations
+            .insert(task_id, TaskAllocations::new(stack_base, stack_size));
     });
 }
 
-/// Unload a program when its task exits
+/// Register a task's program memory (for loaded ELF programs)
 ///
-/// Called by the scheduler when a program task finishes.
+/// Called after loading an ELF executable for a task.
+pub fn register_task_program(task_id: TaskId, base_addr: usize, size: usize) {
+    REGISTRY.with(|reg| {
+        if let Some(allocs) = reg.task_allocations.get_mut(&task_id) {
+            allocs.program = Some((base_addr, size));
+        }
+    });
+}
+
+/// Allocate heap memory for a task
+///
+/// Allocations are rounded up to 4KB multiples.
+/// Returns the allocation address, or None if allocation fails.
+pub fn task_alloc(task_id: TaskId, size: usize) -> Option<usize> {
+    if size == 0 {
+        return None;
+    }
+
+    // Round up to 4KB multiple
+    let aligned_size = (size + 0xFFF) & !0xFFF;
+
+    // Allocate from program region
+    let addr = program_alloc::allocate(aligned_size)?;
+
+    // Track the allocation
+    REGISTRY.with(|reg| {
+        if let Some(allocs) = reg.task_allocations.get_mut(&task_id) {
+            allocs.heap_blocks.push((addr, aligned_size));
+        }
+    });
+
+    Some(addr)
+}
+
+/// Free heap memory for a task
+///
+/// Verifies the pointer belongs to this task before freeing.
+/// Returns true if freed, false if pointer not found or wrong task.
+pub fn task_free(task_id: TaskId, ptr: usize) -> bool {
+    REGISTRY.with(|reg| {
+        if let Some(allocs) = reg.task_allocations.get_mut(&task_id) {
+            // Find the allocation in this task's heap_blocks
+            if let Some(idx) = allocs.heap_blocks.iter().position(|(addr, _)| *addr == ptr) {
+                let (addr, size) = allocs.heap_blocks.remove(idx);
+                unsafe {
+                    program_alloc::deallocate(addr, size);
+                }
+                return true;
+            }
+        }
+        false
+    })
+}
+
+/// Unload all memory for a task when it exits
+///
+/// Called by the scheduler when a task finishes.
+/// Frees: heap blocks, program memory, and stack.
 pub fn unload_task(task_id: TaskId) {
     if !REGISTRY.is_initialized() {
         return;
     }
 
     REGISTRY.with(|reg| {
-        if let Some((addr, size)) = reg.loaded_programs.remove(&task_id) {
-            unsafe {
-                program_alloc::deallocate(addr, size);
+        if let Some(allocs) = reg.task_allocations.remove(&task_id) {
+            // Free all heap blocks first
+            for (addr, size) in allocs.heap_blocks {
+                unsafe {
+                    program_alloc::deallocate(addr, size);
+                }
             }
-            crate::println!(
-                "Unloaded program at 0x{:X} (task {})",
-                addr,
-                task_id
-            );
+
+            // Free program memory if any
+            if let Some((addr, size)) = allocs.program {
+                unsafe {
+                    program_alloc::deallocate(addr, size);
+                }
+                crate::println!(
+                    "Unloaded program at 0x{:X} (task {})",
+                    addr,
+                    task_id
+                );
+            }
+
+            // Free stack
+            let (stack_addr, stack_size) = allocs.stack;
+            unsafe {
+                program_alloc::deallocate(stack_addr, stack_size);
+            }
         }
     });
 }

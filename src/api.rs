@@ -8,7 +8,7 @@ use crate::task::TaskId;
 use crate::executable::{self, LoadedProgram};
 
 /// Kernel API version
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 
 /// Kernel API structure passed to programs
 ///
@@ -26,6 +26,10 @@ pub struct KernelApi {
     pub sleep_ms: extern "C" fn(u64),
     /// Exit the current program
     pub exit: extern "C" fn() -> !,
+    /// Allocate memory (rounded up to 4KB)
+    pub alloc: extern "C" fn(usize) -> *mut u8,
+    /// Free memory (kernel tracks size, verifies ownership)
+    pub free: extern "C" fn(*mut u8),
 }
 
 // API implementation functions
@@ -57,6 +61,36 @@ extern "C" fn api_exit() -> ! {
     }
 }
 
+extern "C" fn api_alloc(size: usize) -> *mut u8 {
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+
+    let task_id = match scheduler::current_task_id() {
+        Some(id) => id,
+        None => return core::ptr::null_mut(),
+    };
+
+    match executable::task_alloc(task_id, size) {
+        Some(addr) => addr as *mut u8,
+        None => core::ptr::null_mut(),
+    }
+}
+
+extern "C" fn api_free(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+
+    let task_id = match scheduler::current_task_id() {
+        Some(id) => id,
+        None => return,
+    };
+
+    // Kernel looks up size and verifies ownership
+    executable::task_free(task_id, ptr as usize);
+}
+
 /// Global kernel API instance
 pub static KERNEL_API: KernelApi = KernelApi {
     version: API_VERSION,
@@ -64,6 +98,8 @@ pub static KERNEL_API: KernelApi = KernelApi {
     yield_now: api_yield,
     sleep_ms: api_sleep,
     exit: api_exit,
+    alloc: api_alloc,
+    free: api_free,
 };
 
 /// Program entry point type
@@ -90,10 +126,11 @@ pub fn spawn_program(name: &'static str) -> Result<TaskId, executable::ExecError
     let program = executable::load(name)?;
 
     // Spawn the task
-    let task_id = spawn_program_task(name, &program);
+    let task_id = spawn_program_task(name, &program)
+        .ok_or(executable::ExecError::AllocationFailed)?;
 
-    // Register for cleanup
-    executable::register_task(task_id, &program);
+    // Register program memory for cleanup
+    executable::register_task_program(task_id, program.base_addr, program.size);
 
     Ok(task_id)
 }
@@ -106,16 +143,17 @@ pub fn spawn_program_dynamic(name: &str) -> Result<TaskId, executable::ExecError
     let program = executable::load(name)?;
 
     // Spawn the task with a generic static name
-    let task_id = spawn_program_task("program", &program);
+    let task_id = spawn_program_task("program", &program)
+        .ok_or(executable::ExecError::AllocationFailed)?;
 
-    // Register for cleanup
-    executable::register_task(task_id, &program);
+    // Register program memory for cleanup
+    executable::register_task_program(task_id, program.base_addr, program.size);
 
     Ok(task_id)
 }
 
 /// Internal: spawn a task for a loaded program
-fn spawn_program_task(name: &'static str, program: &LoadedProgram) -> TaskId {
+fn spawn_program_task(name: &'static str, program: &LoadedProgram) -> Option<TaskId> {
     // We need to create a task that will call program_wrapper with the entry point
     // The trick is we can't capture the entry point in a closure since spawn takes fn()
 
