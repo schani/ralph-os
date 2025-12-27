@@ -253,9 +253,11 @@ impl<T> Spinlock<T> {
     }
 
     pub fn lock(&self) -> SpinlockGuard<'_, T> {
-        while self
+        // In single-threaded cooperative scheduling, contention should never occur.
+        // If it does, our invariants are violated - panic immediately rather than deadlock.
+        if self
             .locked
-            .compare_exchange_weak(
+            .compare_exchange(
                 false,
                 true,
                 core::sync::atomic::Ordering::Acquire,
@@ -263,7 +265,7 @@ impl<T> Spinlock<T> {
             )
             .is_err()
         {
-            core::hint::spin_loop();
+            panic!("Allocator lock contention - cooperative scheduling invariant violated!");
         }
         SpinlockGuard { lock: self }
     }

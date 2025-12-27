@@ -14,10 +14,10 @@ use crate::task::Context;
 /// * `next` - Pointer to restore the next context from
 ///
 /// # Safety
-/// * Both pointers must be valid and properly aligned
-/// * The `next` context must have been previously set up correctly
+/// - Both pointers must be valid and properly aligned
+/// - The `next` context must have been previously set up correctly
 #[unsafe(naked)]
-pub extern "C" fn switch_context(
+pub unsafe extern "C" fn switch_context(
     _current: *mut Context,
     _next: *const Context,
 ) {
