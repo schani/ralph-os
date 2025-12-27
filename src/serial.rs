@@ -86,8 +86,7 @@ impl Serial {
     }
 
     /// Check if data is available to read
-    #[allow(dead_code)]
-    fn has_data(&self) -> bool {
+    pub fn has_data(&self) -> bool {
         unsafe { inb(self.port + LINE_STATUS) & LSR_DATA_READY != 0 }
     }
 
@@ -103,13 +102,22 @@ impl Serial {
     }
 
     /// Read a single byte (blocking)
-    #[allow(dead_code)]
     pub fn read_byte(&self) -> u8 {
         // Wait for data to be available
         while !self.has_data() {
             core::hint::spin_loop();
         }
         unsafe { inb(self.port + DATA) }
+    }
+
+    /// Try to read a byte (non-blocking)
+    /// Returns Some(byte) if data available, None otherwise
+    pub fn try_read_byte(&self) -> Option<u8> {
+        if self.has_data() {
+            Some(unsafe { inb(self.port + DATA) })
+        } else {
+            None
+        }
     }
 
     /// Write a string
@@ -158,4 +166,19 @@ macro_rules! print {
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+/// Check if data is available to read
+pub fn has_data() -> bool {
+    SERIAL.has_data()
+}
+
+/// Read a byte from serial (blocking)
+pub fn read_byte() -> u8 {
+    SERIAL.read_byte()
+}
+
+/// Try to read a byte from serial (non-blocking)
+pub fn try_read_byte() -> Option<u8> {
+    SERIAL.try_read_byte()
 }

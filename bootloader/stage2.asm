@@ -6,9 +6,11 @@
 [ORG 0x7E00]
 
 KERNEL_ADDR         equ 0x100000    ; Load kernel at 1MB
-KERNEL_SECTORS      equ 64          ; 32KB kernel max (for now)
-KERNEL_LOAD_SEG     equ 0x1000      ; Temporary load segment (0x10000)
-KERNEL_LOAD_OFF     equ 0x0000
+
+; Kernel loading - use multiple small reads to avoid BIOS issues
+; Each track has 18 sectors, reading within track boundaries is safest
+KERNEL_LOAD_SEG     equ 0x1000      ; Load to 0x10000
+KERNEL_SECTORS      equ 200         ; ~100KB max kernel size
 
 ; Page table locations (must be 4KB aligned)
 PML4_ADDR           equ 0x1000
@@ -101,34 +103,205 @@ load_kernel:
     mov si, msg_kernel
     call print_string
 
-    ; Load kernel to temporary location (below 1MB, BIOS limitation)
-    ; We'll copy it to 1MB after entering protected mode
-    mov ax, KERNEL_LOAD_SEG
-    mov es, ax
-    mov bx, KERNEL_LOAD_OFF
-
-    ; Read sectors using extended BIOS function (for >64KB)
-    mov ah, 0x02            ; Read sectors
-    mov al, KERNEL_SECTORS  ; Number of sectors
-    mov ch, 0               ; Cylinder 0
-    mov cl, 18              ; Sector 18 (after stage1 + stage2: 1 + 16 = 17)
-    mov dh, 0               ; Head 0
+    ; Try LBA extensions first (INT 13h AH=42h)
+    ; Check if extensions are available
+    mov ah, 0x41
+    mov bx, 0x55AA
     mov dl, [boot_drive]
     int 0x13
-    jc .error
+    jc .use_chs               ; Extensions not available
+    cmp bx, 0xAA55
+    jne .use_chs
 
+    ; Use LBA mode - much simpler!
+    mov word [dap_sectors], 8         ; Read 8 sectors at a time
+    mov word [dap_buffer_off], 0
+    mov word [dap_buffer_seg], KERNEL_LOAD_SEG
+    mov dword [dap_lba_low], 17       ; Start at LBA 17 (sector 18)
+    mov dword [dap_lba_high], 0
+    mov word [sectors_left], 200
+
+.lba_loop:
+    cmp word [sectors_left], 0
+    je .done
+
+    ; Adjust sectors to read if near end
+    mov ax, [sectors_left]
+    cmp ax, 8
+    jae .read_8
+    mov [dap_sectors], ax
+    jmp .do_read
+.read_8:
+    mov word [dap_sectors], 8
+
+.do_read:
+    mov ah, 0x42
+    mov dl, [boot_drive]
+    mov si, dap
+    int 0x13
+    jc .lba_error
+
+    ; Progress dot
+    mov al, '.'
+    mov ah, 0x0E
+    int 0x10
+
+    ; Update counters
+    movzx ax, byte [dap_sectors]
+    sub [sectors_left], ax
+
+    ; Advance LBA
+    add [dap_lba_low], eax
+
+    ; Advance buffer
+    movzx eax, byte [dap_sectors]
+    shl ax, 9                   ; * 512
+    add [dap_buffer_off], ax
+    jnc .lba_loop
+    ; Handle segment overflow
+    add word [dap_buffer_seg], 0x1000
+    mov word [dap_buffer_off], 0
+    jmp .lba_loop
+
+.done:
     mov si, msg_ok
     call print_string
-
-    ; Reset ES
     xor ax, ax
     mov es, ax
     ret
 
-.error:
+.lba_error:
     mov si, msg_disk_error
     call print_string
+    mov al, ah
+    shr al, 4
+    call .print_hex_digit
+    mov al, ah
+    and al, 0x0F
+    call .print_hex_digit
     jmp halt16
+
+; Fallback: CHS mode (for systems without LBA support)
+.use_chs:
+    mov ax, KERNEL_LOAD_SEG
+    mov es, ax
+    xor bx, bx
+    mov byte [cur_sector], 18
+    mov byte [cur_head], 0
+    mov byte [cur_cyl], 0
+    mov word [sectors_left], 200
+
+.chs_loop:
+    cmp word [sectors_left], 0
+    je .done
+
+    mov ah, 0x02
+    mov al, 1
+    mov ch, [cur_cyl]
+    mov cl, [cur_sector]
+    mov dh, [cur_head]
+    mov dl, [boot_drive]
+    int 0x13
+    jc .chs_error
+
+    dec word [sectors_left]
+    add bx, 512
+    jnc .no_overflow
+    mov ax, es
+    add ax, 0x1000
+    mov es, ax
+    xor bx, bx
+.no_overflow:
+
+    ; Dot every 20 sectors
+    mov ax, [sectors_left]
+    push ax
+    mov cx, 20
+    xor dx, dx
+    div cx
+    pop ax
+    test dx, dx
+    jnz .no_dot
+    push ax
+    mov al, '.'
+    mov ah, 0x0E
+    int 0x10
+    pop ax
+.no_dot:
+
+    inc byte [cur_sector]
+    cmp byte [cur_sector], 19
+    jb .chs_loop
+    mov byte [cur_sector], 1
+    inc byte [cur_head]
+    cmp byte [cur_head], 2
+    jb .chs_loop
+    mov byte [cur_head], 0
+    inc byte [cur_cyl]
+    jmp .chs_loop
+
+.chs_error:
+    mov [error_code], ah
+    mov si, msg_disk_error
+    call print_string
+    mov al, [error_code]
+    shr al, 4
+    call .print_hex_digit
+    mov al, [error_code]
+    and al, 0x0F
+    call .print_hex_digit
+    mov si, msg_at_chs
+    call print_string
+    mov al, [cur_cyl]
+    call .print_hex_byte
+    mov al, ','
+    mov ah, 0x0E
+    int 0x10
+    mov al, [cur_head]
+    call .print_hex_byte
+    mov al, ','
+    mov ah, 0x0E
+    int 0x10
+    mov al, [cur_sector]
+    call .print_hex_byte
+    jmp halt16
+
+.print_hex_byte:
+    push ax
+    shr al, 4
+    call .print_hex_digit
+    pop ax
+    and al, 0x0F
+.print_hex_digit:
+    cmp al, 10
+    jb .digit
+    add al, 'A' - 10
+    jmp .print_it
+.digit:
+    add al, '0'
+.print_it:
+    push ax
+    mov ah, 0x0E
+    int 0x10
+    pop ax
+    ret
+
+; Disk Address Packet for LBA mode
+align 4
+dap:
+    db 16           ; Size of DAP
+    db 0            ; Reserved
+dap_sectors:    dw 0    ; Sectors to read
+dap_buffer_off: dw 0    ; Buffer offset
+dap_buffer_seg: dw 0    ; Buffer segment
+dap_lba_low:    dd 0    ; LBA low 32 bits
+dap_lba_high:   dd 0    ; LBA high 32 bits
+
+error_code: db 0
+cur_sector: db 0
+cur_head:   db 0
+cur_cyl:    db 0
+sectors_left: dw 0
 
 halt16:
     cli
@@ -167,9 +340,9 @@ protected_mode:
     mov ss, ax
     mov esp, 0x90000        ; Set up stack
 
-    ; Copy kernel from temporary location to 1MB
-    mov esi, (KERNEL_LOAD_SEG << 4) + KERNEL_LOAD_OFF
-    mov edi, KERNEL_ADDR
+    ; Copy kernel from 0x10000 to 0x100000
+    mov esi, (KERNEL_LOAD_SEG << 4)         ; Source: 0x10000
+    mov edi, KERNEL_ADDR                     ; Dest: 0x100000
     mov ecx, (KERNEL_SECTORS * 512) / 4     ; Copy dwords
     rep movsd
 
@@ -212,13 +385,16 @@ setup_page_tables:
     ; PDPT[0] -> PD
     mov dword [PDPT_ADDR], PD_ADDR | 0x03       ; Present + Writable
 
-    ; PD[0] -> 2MB page (use huge pages for simplicity)
-    ; Actually, let's map first 2MB using 2MB huge page
-    mov dword [PD_ADDR], 0x00000083             ; Present + Writable + Huge (2MB)
-
-    ; Map more memory for kernel at 1MB
-    ; PD[1] -> another 2MB page (covers 2MB-4MB)
-    mov dword [PD_ADDR + 8], 0x00200083         ; 2MB + flags
+    ; Map 16MB using 2MB huge pages (8 entries)
+    ; This covers: kernel (1MB), heap (2-4MB), and leaves room for growth
+    mov dword [PD_ADDR + 0],  0x00000083        ; 0-2MB
+    mov dword [PD_ADDR + 8],  0x00200083        ; 2-4MB (heap)
+    mov dword [PD_ADDR + 16], 0x00400083        ; 4-6MB
+    mov dword [PD_ADDR + 24], 0x00600083        ; 6-8MB
+    mov dword [PD_ADDR + 32], 0x00800083        ; 8-10MB
+    mov dword [PD_ADDR + 40], 0x00A00083        ; 10-12MB
+    mov dword [PD_ADDR + 48], 0x00C00083        ; 12-14MB
+    mov dword [PD_ADDR + 56], 0x00E00083        ; 14-16MB
 
     ret
 
@@ -229,6 +405,18 @@ setup_page_tables:
 [BITS 64]
 
 long_mode:
+    ; Enable SSE (required for 128-bit operations)
+    ; Clear CR0.EM (bit 2) and set CR0.MP (bit 1)
+    mov rax, cr0
+    and ax, 0xFFFB          ; Clear EM
+    or ax, 0x2              ; Set MP
+    mov cr0, rax
+
+    ; Set CR4.OSFXSR (bit 9) and CR4.OSXMMEXCPT (bit 10)
+    mov rax, cr4
+    or ax, (1 << 9) | (1 << 10)
+    mov cr4, rax
+
     ; Set up segment registers (mostly unused in long mode, but clear them)
     mov ax, 0x20            ; 64-bit data segment
     mov ds, ax
@@ -254,6 +442,7 @@ msg_a20:        db "A20 line...", 0
 msg_kernel:     db "Loading kernel...", 0
 msg_ok:         db " OK", 13, 10, 0
 msg_disk_error: db " DISK ERROR!", 13, 10, 0
+msg_at_chs:     db " at CHS ", 0
 
 ; ============================================================================
 ; GDT (Global Descriptor Table)

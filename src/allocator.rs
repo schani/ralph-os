@@ -253,7 +253,6 @@ impl<T> Spinlock<T> {
     }
 
     pub fn lock(&self) -> SpinlockGuard<'_, T> {
-        // Spin until we acquire the lock
         while self
             .locked
             .compare_exchange_weak(
@@ -264,7 +263,6 @@ impl<T> Spinlock<T> {
             )
             .is_err()
         {
-            // Spin hint for better performance
             core::hint::spin_loop();
         }
         SpinlockGuard { lock: self }
@@ -306,4 +304,26 @@ static ALLOCATOR: LockedAllocator = LockedAllocator::new();
 /// Must be called exactly once during kernel initialization
 pub unsafe fn init_heap(heap_start: usize, heap_size: usize) {
     ALLOCATOR.init(heap_start, heap_size);
+}
+
+/// Get current heap usage statistics
+///
+/// Returns (used_bytes, free_bytes)
+pub fn get_heap_stats() -> (usize, usize) {
+    let allocator = ALLOCATOR.inner.lock();
+
+    // Walk the free list to count free bytes
+    let mut free = 0;
+    let mut current = allocator.head;
+
+    while let Some(block_ptr) = current {
+        let block = unsafe { block_ptr.as_ref() };
+        free += block.size;
+        current = block.next;
+    }
+
+    let total = allocator.heap_end - allocator.heap_start;
+    let used = total - free;
+
+    (used, free)
 }
