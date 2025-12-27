@@ -14,3 +14,4 @@
 # OS files
 .DS_Store
 Thumbs.db
+programs/hello/target

@@ -5,12 +5,16 @@
 extern crate alloc;
 
 mod allocator;
+mod api;
 mod basic;
 mod context_switch;
+mod elf;
+mod executable;
 mod idt;
 mod interrupts;
 mod io;
 mod pic;
+mod program_alloc;
 mod scheduler;
 mod serial;
 mod task;
@@ -83,12 +87,37 @@ pub extern "C" fn kernel_main() -> ! {
     println!("\nInitializing scheduler...");
     scheduler::init();
 
+    // Initialize executable subsystem
+    println!("\nInitializing executable loader...");
+    match executable::init() {
+        Ok(count) => {
+            if count > 0 {
+                println!("Available executables:");
+                for name in executable::list() {
+                    println!("  - {}", name);
+                }
+            }
+        }
+        Err(e) => {
+            println!("Warning: Failed to initialize executables: {:?}", e);
+        }
+    }
+
     // Spawn BASIC tasks
     println!("\nSpawning tasks...");
     scheduler::spawn("memstats", basic::memstats_task);
     println!("  - memstats: Memory monitor (BASIC)");
     scheduler::spawn("basic-repl", basic::repl_task);
     println!("  - basic-repl: Interactive BASIC interpreter");
+
+    // Try to spawn a dynamically loaded program
+    if !executable::list().is_empty() {
+        println!("\nSpawning loaded executables...");
+        match api::spawn_program("hello") {
+            Ok(task_id) => println!("  - hello: Loaded program (task {})", task_id),
+            Err(e) => println!("  - hello: Failed to load: {:?}", e),
+        }
+    }
 
     println!("\nStarting scheduler...\n");
 

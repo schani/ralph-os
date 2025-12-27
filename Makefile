@@ -1,4 +1,4 @@
-.PHONY: all build run debug clean setup help bootloader kernel image
+.PHONY: all build run debug clean setup help bootloader kernel image programs
 
 # Output files
 BUILD_DIR       = target
@@ -8,22 +8,32 @@ STAGE2          = $(BUILD_DIR)/stage2.bin
 KERNEL          = $(BUILD_DIR)/x86_64-ralph_os/release/ralph_os
 KERNEL_BIN      = $(BUILD_DIR)/kernel.bin
 OS_IMAGE        = $(BUILD_DIR)/ralph_os.img
+EXEC_TABLE      = $(BUILD_DIR)/exec_table.bin
+
+# Programs
+PROGRAMS_DIR    = programs
+PROGRAMS        = hello
+PROGRAM_ELFS    = $(patsubst %,$(BUILD_DIR)/programs/%.elf,$(PROGRAMS))
 
 # Tools
 NASM            = nasm
 OBJCOPY         = $(shell find ~/.rustup -name 'llvm-objcopy' 2>/dev/null | head -1)
 QEMU            = qemu-system-x86_64
+PYTHON          = python3
 
 # Kernel size limit (must match KERNEL_SECTORS in stage2.asm)
-# 200 sectors * 512 bytes = 102400 bytes
-MAX_KERNEL_SIZE = 102400
+# 400 sectors * 512 bytes = 204800 bytes (includes kernel + exec table + programs)
+MAX_KERNEL_SIZE = 204800
 
 # Default target
 all: image
 
-# Create build directory
+# Create build directories
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+
+$(BUILD_DIR)/programs:
+	mkdir -p $(BUILD_DIR)/programs
 
 # Build stage 1 bootloader
 $(STAGE1): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
@@ -39,26 +49,33 @@ $(STAGE2): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 bootloader: $(STAGE1) $(STAGE2)
 
 # Build kernel
-$(KERNEL): src/*.rs Cargo.toml kernel.ld
+$(KERNEL): src/*.rs src/basic/*.rs Cargo.toml kernel.ld
 	cargo build --release
 
 # Convert kernel ELF to flat binary
 $(KERNEL_BIN): $(KERNEL)
 	$(OBJCOPY) -O binary $< $@
-	@KSIZE=$$(stat -c %s $@); \
-	if [ $$KSIZE -gt $(MAX_KERNEL_SIZE) ]; then \
-		echo "ERROR: Kernel too large! $$KSIZE bytes > $(MAX_KERNEL_SIZE) bytes"; \
-		echo "Increase KERNEL_SECTORS in stage2.asm or reduce kernel size."; \
-		rm -f $@; \
-		exit 1; \
-	else \
-		echo "Kernel size: $$KSIZE bytes (limit: $(MAX_KERNEL_SIZE))"; \
-	fi
+	@echo "Kernel size: $$(stat -c %s $@) bytes"
 
 kernel: $(KERNEL_BIN)
 
+# Build a program
+$(BUILD_DIR)/programs/%.elf: $(PROGRAMS_DIR)/%/src/main.rs $(PROGRAMS_DIR)/%/Cargo.toml | $(BUILD_DIR)/programs
+	@echo "Building program: $*"
+	cd $(PROGRAMS_DIR)/$* && cargo build --release
+	cp $(PROGRAMS_DIR)/$*/target/x86_64-ralph_program/release/$* $@
+	@echo "Program $* size: $$(stat -c %s $@) bytes"
+
+# Build all programs
+programs: $(PROGRAM_ELFS)
+
+# Create executable table (header + concatenated ELFs)
+$(EXEC_TABLE): $(PROGRAM_ELFS)
+	@echo "Creating executable table..."
+	$(PYTHON) scripts/make_exec_table.py $@ $(PROGRAM_ELFS)
+
 # Create bootable disk image
-$(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN)
+$(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(EXEC_TABLE)
 	@echo "Creating disk image..."
 	# Start with stage 1 (512 bytes)
 	cp $(STAGE1) $@
@@ -72,6 +89,20 @@ $(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN)
 	fi
 	# Append kernel
 	cat $(KERNEL_BIN) >> $@
+	# Append executable table (header + programs)
+	cat $(EXEC_TABLE) >> $@
+	# Check total size
+	@TOTAL_SIZE=$$(stat -c %s $@); \
+	KERNEL_START=$$((17 * 512)); \
+	CONTENT_SIZE=$$((TOTAL_SIZE - KERNEL_START)); \
+	if [ $$CONTENT_SIZE -gt $(MAX_KERNEL_SIZE) ]; then \
+		echo "ERROR: Kernel + programs too large! $$CONTENT_SIZE bytes > $(MAX_KERNEL_SIZE) bytes"; \
+		echo "Increase KERNEL_SECTORS in stage2.asm or reduce content size."; \
+		rm -f $@; \
+		exit 1; \
+	else \
+		echo "Kernel + programs size: $$CONTENT_SIZE bytes (limit: $(MAX_KERNEL_SIZE))"; \
+	fi
 	# Pad to 1.44MB floppy size (optional, good for compatibility)
 	@CURRENT_SIZE=$$(stat -c %s $@); \
 	FLOPPY_SIZE=$$((1474560)); \
@@ -114,7 +145,11 @@ gdb: image
 # Clean build artifacts
 clean:
 	cargo clean
-	rm -f $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(OS_IMAGE)
+	rm -f $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(OS_IMAGE) $(EXEC_TABLE)
+	rm -rf $(BUILD_DIR)/programs
+	for prog in $(PROGRAMS); do \
+		rm -rf $(PROGRAMS_DIR)/$$prog/target; \
+	done
 
 # Install required tools
 setup:
@@ -132,6 +167,7 @@ help:
 	@echo "  all       - Build everything (default)"
 	@echo "  bootloader- Build bootloader only"
 	@echo "  kernel    - Build kernel only"
+	@echo "  programs  - Build all programs"
 	@echo "  image     - Create bootable disk image"
 	@echo "  run       - Build and run in QEMU"
 	@echo "  debug     - Run with QEMU interrupt logging"

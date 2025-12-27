@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::task::{Task, TaskId, TaskState, Context};
 use crate::context_switch::switch_context;
 use crate::timer;
+use crate::executable;
 
 /// Single-threaded scheduler cell with initialization guard.
 ///
@@ -152,7 +153,20 @@ impl Scheduler {
 
     /// Remove finished tasks from the task list to free memory.
     /// Adjusts the current index to maintain correct task tracking.
+    /// Also cleans up program memory for finished program tasks.
     fn reap_finished_tasks(&mut self) {
+        // Collect IDs of finished tasks for cleanup
+        let finished_ids: alloc::vec::Vec<TaskId> = self.tasks
+            .iter()
+            .filter(|t| t.state == TaskState::Finished)
+            .map(|t| t.id)
+            .collect();
+
+        // Clean up program memory for finished tasks
+        for task_id in finished_ids {
+            executable::unload_task(task_id);
+        }
+
         // Count finished tasks before current for index adjustment
         let finished_before_current = self.tasks[..self.current]
             .iter()

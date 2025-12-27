@@ -10,7 +10,7 @@ KERNEL_ADDR         equ 0x100000    ; Load kernel at 1MB
 ; Kernel loading - use multiple small reads to avoid BIOS issues
 ; Each track has 18 sectors, reading within track boundaries is safest
 KERNEL_LOAD_SEG     equ 0x1000      ; Load to 0x10000
-KERNEL_SECTORS      equ 200         ; ~100KB max kernel size
+KERNEL_SECTORS      equ 400         ; ~200KB max (kernel + exec table + programs)
 
 ; Page table locations (must be 4KB aligned)
 PML4_ADDR           equ 0x1000
@@ -119,7 +119,7 @@ load_kernel:
     mov word [dap_buffer_seg], KERNEL_LOAD_SEG
     mov dword [dap_lba_low], 17       ; Start at LBA 17 (sector 18)
     mov dword [dap_lba_high], 0
-    mov word [sectors_left], 200
+    mov word [sectors_left], KERNEL_SECTORS
 
 .lba_loop:
     cmp word [sectors_left], 0
@@ -189,7 +189,7 @@ load_kernel:
     mov byte [cur_sector], 18
     mov byte [cur_head], 0
     mov byte [cur_cyl], 0
-    mov word [sectors_left], 200
+    mov word [sectors_left], KERNEL_SECTORS
 
 .chs_loop:
     cmp word [sectors_left], 0
