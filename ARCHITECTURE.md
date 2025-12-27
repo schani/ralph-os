@@ -109,6 +109,7 @@ ralph_os/
 │   └── stage2.asm        # Mode transitions (16→32→64-bit)
 ├── src/
 │   ├── main.rs           # Kernel entry, panic handler
+│   ├── io.rs             # Port I/O primitives (inb, outb)
 │   ├── serial.rs         # UART 16550 driver
 │   ├── allocator.rs      # Linked list heap allocator
 │   ├── idt.rs            # Interrupt Descriptor Table

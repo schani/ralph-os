@@ -59,68 +59,23 @@ Issues identified during code review, with proposed solutions where applicable.
 
 ---
 
+## Medium Priority - COMPLETED
+
+### 6. ~~Serial `_print` Creates Unnecessary Instance~~ ✓ DONE
+**Location:** `src/serial.rs`
+
+**Fixed:** `_print` now uses the static `SERIAL` instance instead of creating a new one each call. Implemented `fmt::Write` for `&Serial` to enable shared reference usage.
+
+---
+
+### 7. ~~Duplicated Port I/O Functions~~ ✓ DONE
+**Location:** `src/io.rs` (new)
+
+**Fixed:** Created `src/io.rs` with shared `inb`, `outb`, and `io_wait` functions. Updated `serial.rs`, `timer.rs`, and `pic.rs` to use `crate::io`.
+
+---
+
 ## Medium Priority
-
-### 6. Serial `_print` Creates Unnecessary Instance
-**Location:** `src/serial.rs:151-156`
-
-**Problem:**
-```rust
-pub fn _print(args: fmt::Arguments) {
-    let mut serial = Serial::new(COM1);  // New instance every call
-    serial.write_fmt(args).unwrap();
-}
-```
-There's already a `static SERIAL` at line 142, but it's not used here.
-
-**Solution:** Use the existing static (requires mutable access):
-```rust
-pub fn _print(args: fmt::Arguments) {
-    use core::fmt::Write;
-    // SERIAL is already initialized, just need Write impl on &Serial
-    SERIAL.write_fmt(args).unwrap();
-}
-```
-
-Note: `Serial::write_str(&self, ...)` already takes `&self`, so this should work. The current `impl Write for Serial` takes `&mut self` unnecessarily.
-
----
-
-### 7. Duplicated Port I/O Functions
-**Location:** `src/serial.rs:22-43`, `src/timer.rs:21-43`
-
-**Problem:** `inb()` and `outb()` are copy-pasted between modules.
-
-**Solution:** Create `src/io.rs`:
-```rust
-//! Low-level port I/O operations
-
-#[inline]
-pub unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    core::arch::asm!(
-        "in al, dx",
-        out("al") value,
-        in("dx") port,
-        options(nomem, nostack, preserves_flags)
-    );
-    value
-}
-
-#[inline]
-pub unsafe fn outb(port: u16, value: u8) {
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") port,
-        in("al") value,
-        options(nomem, nostack, preserves_flags)
-    );
-}
-```
-
-Then `use crate::io::{inb, outb};` in serial.rs and timer.rs.
-
----
 
 ### 8. Unnecessary Box Around Scheduler
 **Location:** `src/scheduler.rs:13, 168`
