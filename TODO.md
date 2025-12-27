@@ -35,13 +35,16 @@ Issues identified during code review, with proposed solutions where applicable.
 
 ---
 
-### 4. ~~Busy-Wait Scheduling Burns CPU~~ ✓ DOCUMENTED
-**Location:** `src/scheduler.rs:183-195`
+### 4. ~~Busy-Wait Scheduling Burns CPU~~ ✓ DONE
+**Location:** `src/scheduler.rs:207-215`
 
-**Status:** Cannot be fixed without interrupts. Added clear documentation explaining:
-- No IDT/interrupt handlers installed
-- HLT would triple-fault on PIT interrupt
-- This is unavoidable for interrupt-free cooperative scheduling
+**Fixed:** Implemented full interrupt support:
+- Created `src/idt.rs` with Interrupt Descriptor Table (256 entries)
+- Created `src/pic.rs` with 8259 PIC driver (remaps IRQ0-15 to vectors 32-47)
+- Created `src/interrupts.rs` with naked ISR stubs and Rust handlers
+- Timer interrupt (IRQ0/vector 32) now drives tick counter
+- Scheduler uses HLT instruction to sleep between interrupts
+- CPU enters low-power state until next timer tick (100 Hz)
 
 ---
 
@@ -230,6 +233,6 @@ These are intentional design decisions, documented here for clarity:
 
 - **No virtual memory isolation** - All tasks share flat address space. By design for simplicity.
 - **No preemptive scheduling** - Cooperative only. Tasks must yield voluntarily.
-- **No interrupts** - Timer is polled. Keeps complexity down but limits functionality.
+- **Timer interrupt only** - Only IRQ0/timer is currently handled. Keyboard etc. not yet implemented.
 - **Single-core only** - No SMP support.
 - **Serial I/O only** - No keyboard/display drivers.

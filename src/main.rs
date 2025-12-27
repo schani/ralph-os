@@ -7,6 +7,9 @@ extern crate alloc;
 mod allocator;
 mod basic;
 mod context_switch;
+mod idt;
+mod interrupts;
+mod pic;
 mod scheduler;
 mod serial;
 mod task;
@@ -54,10 +57,26 @@ pub extern "C" fn kernel_main() -> ! {
         HEAP_SIZE / 1024
     );
 
+    // Initialize PIC
+    println!("\nInitializing PIC...");
+    pic::init();
+
+    // Initialize IDT
+    println!("Initializing IDT...");
+    idt::init();
+
     // Initialize timer
     println!("\nInitializing timer...");
     timer::init();
     println!("Timer: {} Hz", timer::ticks_per_second());
+
+    // Enable IRQ0
+    pic::enable_irq(0);
+    println!("IRQ0 enabled");
+
+    // Enable CPU interrupts
+    idt::enable_interrupts();
+    println!("Interrupts enabled (STI)");
 
     // Initialize scheduler
     println!("\nInitializing scheduler...");

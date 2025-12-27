@@ -105,14 +105,22 @@ BIOS → Stage 1 (boot sector) → Stage 2 → Kernel
 ```
 ralph_os/
 ├── bootloader/
-│   ├── stage1.asm      # Boot sector (16-bit)
-│   └── stage2.asm      # Mode transitions (16→32→64-bit)
+│   ├── stage1.asm        # Boot sector (16-bit)
+│   └── stage2.asm        # Mode transitions (16→32→64-bit)
 ├── src/
-│   ├── main.rs         # Kernel entry, panic handler
-│   ├── serial.rs       # UART 16550 driver
-│   └── allocator.rs    # Linked list heap allocator
-├── kernel.ld           # Linker script
-└── x86_64-ralph_os.json # Custom target spec
+│   ├── main.rs           # Kernel entry, panic handler
+│   ├── serial.rs         # UART 16550 driver
+│   ├── allocator.rs      # Linked list heap allocator
+│   ├── idt.rs            # Interrupt Descriptor Table
+│   ├── pic.rs            # 8259 PIC driver
+│   ├── interrupts.rs     # ISR stubs and handlers
+│   ├── timer.rs          # PIT timer driver
+│   ├── scheduler.rs      # Cooperative scheduler
+│   ├── task.rs           # Task struct and context
+│   ├── context_switch.rs # Context switch assembly
+│   └── basic/            # BASIC interpreter
+├── kernel.ld             # Linker script
+└── x86_64-ralph_os.json  # Custom target spec
 ```
 
 ### serial.rs - Custom Serial Driver
@@ -144,6 +152,52 @@ PML4[0] → PDPT[0] → PD[0] → 2MB huge page (0x000000-0x1FFFFF)
 
 First 4MB identity mapped using 2MB huge pages.
 
+## Interrupt Handling
+
+### Interrupt Descriptor Table (IDT)
+
+The IDT contains 256 entries for handling CPU exceptions and hardware interrupts.
+
+```
+Vector  │ Source      │ Handler
+────────┼─────────────┼───────────────
+0-31    │ CPU         │ (not yet implemented)
+32      │ IRQ0/Timer  │ timer_handler
+33-38   │ IRQ1-6      │ (not yet implemented)
+39      │ IRQ7        │ spurious_handler
+40-46   │ IRQ8-14     │ (not yet implemented)
+47      │ IRQ15       │ spurious_handler
+```
+
+### Programmable Interrupt Controller (PIC)
+
+The 8259 PICs are remapped to avoid conflicts with CPU exceptions:
+
+```
+PIC1 (Master): IRQ 0-7  → Vectors 32-39
+PIC2 (Slave):  IRQ 8-15 → Vectors 40-47
+```
+
+### Timer Interrupt
+
+The PIT (8253/8254) is configured for 100 Hz:
+- Channel 0, Mode 2 (rate generator)
+- Divisor: 11932 (1,193,182 Hz / 100 Hz)
+- Interrupt triggers `timer_handler()` which increments tick count
+
+### HLT-Based Sleep
+
+The scheduler uses HLT for efficient sleeping:
+```rust
+// In scheduler when waiting for sleeping tasks:
+if self.has_sleeping_tasks() {
+    unsafe { core::arch::asm!("hlt"); }  // Wait for interrupt
+    self.wake_sleeping_tasks();
+}
+```
+
+This puts the CPU in a low-power state until the next timer interrupt.
+
 ## Hardware Interaction
 
 ### I/O Ports
@@ -151,6 +205,9 @@ First 4MB identity mapped using 2MB huge pages.
 | Port Range  | Device              |
 |-------------|---------------------|
 | 0x3F8-0x3FD | COM1 Serial (UART)  |
+| 0x40-0x43   | PIT Timer           |
+| 0x20-0x21   | PIC1 (Master)       |
+| 0xA0-0xA1   | PIC2 (Slave)        |
 | 0x60, 0x64  | PS/2 Keyboard ctrl  |
 | 0x92        | Fast A20 gate       |
 
@@ -162,6 +219,8 @@ First 4MB identity mapped using 2MB huge pages.
 | PAE              | Required for long mode     |
 | 2MB Huge Pages   | Simplified page tables     |
 | EFER MSR         | Long mode enable           |
+| IDT/LIDT         | Interrupt handling         |
+| HLT              | Low-power wait             |
 
 ## Build Process
 

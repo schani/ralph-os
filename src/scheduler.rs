@@ -175,9 +175,6 @@ impl Scheduler {
 
     /// Schedule and switch to the next task
     fn schedule(&mut self) {
-        // Poll timer
-        timer::poll();
-
         // Wake sleeping tasks
         self.wake_sleeping_tasks();
 
@@ -210,18 +207,12 @@ impl Scheduler {
 
             // No ready tasks
             if self.has_sleeping_tasks() {
-                // Busy-wait until a sleeping task wakes.
-                //
-                // NOTE: This burns CPU at 100%. We cannot use HLT here because:
-                // 1. No interrupt handlers are installed (no IDT)
-                // 2. HLT waits for interrupts, but PIT interrupts would triple-fault
-                // 3. The only fix is implementing proper interrupt handling
-                //
-                // For a cooperative OS without interrupts, this is unavoidable.
-                // Poll the timer to track time and check for wake conditions.
-                timer::poll();
+                // Wait for next interrupt (timer fires at 100 Hz)
+                // HLT puts CPU in low-power state until interrupt
+                unsafe {
+                    core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+                }
                 self.wake_sleeping_tasks();
-                core::hint::spin_loop();
             } else if !self.has_living_tasks() {
                 // All tasks finished - nothing to do
                 return;
