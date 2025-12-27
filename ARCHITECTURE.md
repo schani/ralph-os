@@ -109,7 +109,8 @@ ralph_os/
 │   └── stage2.asm      # Mode transitions (16→32→64-bit)
 ├── src/
 │   ├── main.rs         # Kernel entry, panic handler
-│   └── serial.rs       # UART 16550 driver
+│   ├── serial.rs       # UART 16550 driver
+│   └── allocator.rs    # Linked list heap allocator
 ├── kernel.ld           # Linker script
 └── x86_64-ralph_os.json # Custom target spec
 ```
@@ -175,12 +176,60 @@ make image
     └── Combine: stage1 + stage2 + kernel → ralph_os.img
 ```
 
-## Future Architecture (Planned)
+## Heap Allocator
 
-### Phase 2: Memory Allocator
-- Parse available memory regions
-- Linked list allocator implementing `GlobalAlloc`
-- Enable `alloc` crate for `Vec`, `Box`, `String`
+### Memory Region
+
+```
+┌─────────────────────────────────────┐ 0x00400000 (4MB)
+│                                     │
+│        Heap (2MB)                   │
+│        Linked list allocator        │
+│                                     │
+├─────────────────────────────────────┤ 0x00200000 (2MB)
+│        Kernel                       │
+└─────────────────────────────────────┘ 0x00100000 (1MB)
+```
+
+### Linked List Allocator (`src/allocator.rs`)
+
+A first-fit linked list allocator implemented from scratch:
+
+```
+Free Block Structure:
+┌──────────────────────────────────────┐
+│ size: usize (8 bytes)                │
+│ next: Option<NonNull<FreeBlock>>     │
+│        (16 bytes with padding)       │
+├──────────────────────────────────────┤
+│ ... usable memory ...                │
+└──────────────────────────────────────┘
+```
+
+**Allocation Strategy:**
+1. First-fit search through free list
+2. Handle alignment requirements (align up to requested alignment)
+3. Split blocks if remaining space ≥ minimum block size (24 bytes)
+4. Return aligned pointer
+
+**Deallocation Strategy:**
+1. Create free block at deallocated address
+2. Insert into list (sorted by address for merging)
+3. Merge adjacent free blocks
+
+**Thread Safety:**
+- Spinlock wrapper (`LockedAllocator`) protects all operations
+- Implements `GlobalAlloc` trait for Rust's `#[global_allocator]`
+
+### Enabled Features
+
+With the allocator, the `alloc` crate is available:
+- `alloc::vec::Vec` - Dynamic arrays
+- `alloc::string::String` - Heap-allocated strings
+- `alloc::boxed::Box` - Heap allocation wrapper
+- `alloc::collections::*` - BTreeMap, LinkedList, etc.
+
+## Future Architecture (Planned)
 
 ### Phase 3: Cooperative Multitasking
 - Task struct with saved register state

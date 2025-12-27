@@ -112,7 +112,8 @@ ralph_os/
 │   └── stage2.asm          # Mode transitions (16→32→64-bit)
 ├── src/
 │   ├── main.rs             # Kernel entry point
-│   └── serial.rs           # Custom UART 16550 driver
+│   ├── serial.rs           # Custom UART 16550 driver
+│   └── allocator.rs        # Linked list heap allocator
 ├── Cargo.toml              # Project manifest (no dependencies!)
 ├── Makefile                # Build commands
 ├── kernel.ld               # Kernel linker script
@@ -128,7 +129,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 ## Roadmap
 
 1. ~~**Phase 1**: Hello World kernel with serial output~~ **DONE**
-2. **Phase 2** (next): Heap allocator (linked list)
-3. **Phase 3**: Cooperative multitasking scheduler
+2. ~~**Phase 2**: Heap allocator (linked list)~~ **DONE**
+3. **Phase 3** (next): Cooperative multitasking scheduler
 4. **Phase 4**: Keyboard input and interactive shell
 5. **Phase 5**: In-memory filesystem
