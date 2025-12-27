@@ -82,26 +82,10 @@ Issues identified during code review, with proposed solutions where applicable.
 
 ---
 
-## Medium Priority
+### 9. ~~BASIC Interpreter Clones Statements Every Step~~ ✓ DONE
+**Location:** `src/basic/interpreter.rs`
 
-### 9. BASIC Interpreter Clones Statements Every Step
-**Location:** `src/basic/interpreter.rs:146-152`
-
-**Problem:**
-```rust
-let stmt = match self.program.get(&line_num) {
-    Some(s) => s.clone(),  // Clone entire AST node every step
-    None => { ... }
-};
-```
-
-**Solution:** Use reference and restructure to avoid borrow conflicts:
-```rust
-// Store line_num, look up statement only when needed
-// Or use indices into a statement arena
-```
-
-This is a minor optimization but matters for tight loops in BASIC programs.
+**Fixed:** Refactored `execute_statement`, `eval_expr`, and `eval_binary_op` from methods to free functions with split borrows. Now borrows the statement directly from the program BTreeMap without cloning.
 
 ---
 
