@@ -22,6 +22,7 @@ pub enum Token {
     List,
     New,
     Mem,
+    Spawn,
 
     // Operators
     Plus,
@@ -235,6 +236,7 @@ impl<'a> Lexer<'a> {
             "LIST" => Token::List,
             "NEW" => Token::New,
             "MEM" => Token::Mem,
+            "SPAWN" => Token::Spawn,
             _ => Token::Identifier(s.to_ascii_uppercase()),
         }
     }

@@ -78,6 +78,8 @@ pub enum Statement {
     Rem,
     /// END
     End,
+    /// SPAWN "program_name"
+    Spawn(String),
 }
 
 /// Parse error
@@ -145,6 +147,7 @@ impl<'a> Parser<'a> {
             Token::For => self.parse_for(),
             Token::Next => self.parse_next(),
             Token::Sleep => self.parse_sleep(),
+            Token::Spawn => self.parse_spawn(),
             Token::Rem => {
                 self.advance();
                 self.lexer.skip_to_eol();
@@ -309,6 +312,19 @@ impl<'a> Parser<'a> {
         self.advance(); // consume SLEEP
         let ms = self.parse_expression()?;
         Ok(Statement::Sleep(ms))
+    }
+
+    fn parse_spawn(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume SPAWN
+
+        // Expect a string literal for the program name
+        let name = match &self.current {
+            Token::StringLit(s) => s.clone(),
+            _ => return Err(ParseError("SPAWN requires a program name string".into())),
+        };
+        self.advance();
+
+        Ok(Statement::Spawn(name))
     }
 
     /// Parse expression with operator precedence

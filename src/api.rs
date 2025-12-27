@@ -98,6 +98,22 @@ pub fn spawn_program(name: &'static str) -> Result<TaskId, executable::ExecError
     Ok(task_id)
 }
 
+/// Spawn a program by name (for dynamic names like from BASIC)
+///
+/// This version takes a regular &str and uses "program" as the task name.
+pub fn spawn_program_dynamic(name: &str) -> Result<TaskId, executable::ExecError> {
+    // Load the program
+    let program = executable::load(name)?;
+
+    // Spawn the task with a generic static name
+    let task_id = spawn_program_task("program", &program);
+
+    // Register for cleanup
+    executable::register_task(task_id, &program);
+
+    Ok(task_id)
+}
+
 /// Internal: spawn a task for a loaded program
 fn spawn_program_task(name: &'static str, program: &LoadedProgram) -> TaskId {
     // We need to create a task that will call program_wrapper with the entry point

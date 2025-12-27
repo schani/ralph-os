@@ -110,15 +110,6 @@ pub extern "C" fn kernel_main() -> ! {
     scheduler::spawn("basic-repl", basic::repl_task);
     println!("  - basic-repl: Interactive BASIC interpreter");
 
-    // Try to spawn a dynamically loaded program
-    if !executable::list().is_empty() {
-        println!("\nSpawning loaded executables...");
-        match api::spawn_program("hello") {
-            Ok(task_id) => println!("  - hello: Loaded program (task {})", task_id),
-            Err(e) => println!("  - hello: Failed to load: {:?}", e),
-        }
-    }
-
     println!("\nStarting scheduler...\n");
 
     // Run scheduler (never returns)

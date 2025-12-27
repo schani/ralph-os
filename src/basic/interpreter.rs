@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use super::value::Value;
 use super::parser::{Statement, Expr, BinaryOp, ForState, Parser};
 use crate::allocator;
+use crate::api;
 
 /// Execution status after running a statement
 #[derive(Clone, Debug, PartialEq)]
@@ -359,6 +360,16 @@ fn execute_statement(
         Statement::Rem => Ok(NextAction::Continue),
 
         Statement::End => Ok(NextAction::End),
+
+        Statement::Spawn(name) => {
+            match api::spawn_program_dynamic(name) {
+                Ok(task_id) => {
+                    crate::println!("Spawned '{}' as task {}", name, task_id);
+                    Ok(NextAction::Continue)
+                }
+                Err(e) => Err(alloc::format!("SPAWN failed: {:?}", e)),
+            }
+        }
     }
 }
 
@@ -459,6 +470,7 @@ fn format_statement(stmt: &Statement) -> String {
         Statement::Sleep(expr) => alloc::format!("SLEEP {}", format_expr(expr)),
         Statement::Rem => String::from("REM"),
         Statement::End => String::from("END"),
+        Statement::Spawn(name) => alloc::format!("SPAWN \"{}\"", name),
     }
 }
 
