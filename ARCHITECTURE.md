@@ -52,10 +52,19 @@ BIOS → Stage 1 (boot sector) → Stage 2 → Kernel
 │                                     │
 │        (Unmapped)                   │
 │                                     │
+├─────────────────────────────────────┤ 0x01000000 (16MB)
+│                                     │
+│        Program Region (12MB)        │
+│        - Task stacks (16KB each)    │
+│        - Loaded ELF programs        │
+│        - User heap allocations      │
+│        Capacity: ~768 tasks         │
+│                                     │
 ├─────────────────────────────────────┤ 0x00400000 (4MB)
 │                                     │
-│        Available RAM                │
-│        (future: heap, tasks)        │
+│        Kernel Heap (2MB)            │
+│        - Kernel data structures     │
+│        - Allocation tracking        │
 │                                     │
 ├─────────────────────────────────────┤ 0x00200000 (2MB)
 │                                     │
@@ -65,7 +74,7 @@ BIOS → Stage 1 (boot sector) → Stage 2 → Kernel
 ├─────────────────────────────────────┤ 0x00100000 (1MB)
 │        BIOS ROM / Video Memory      │
 ├─────────────────────────────────────┤ 0x000A0000 (640KB)
-│        Stack (grows down)           │
+│        Boot Stack (grows down)      │
 │        ← RSP starts at 0x90000      │
 ├─────────────────────────────────────┤ ~0x00090000
 │                                     │
@@ -112,6 +121,7 @@ ralph_os/
 │   ├── io.rs             # Port I/O primitives (inb, outb)
 │   ├── serial.rs         # UART 16550 driver
 │   ├── allocator.rs      # Linked list heap allocator
+│   ├── program_alloc.rs  # Bump allocator for program region
 │   ├── idt.rs            # Interrupt Descriptor Table
 │   ├── pic.rs            # 8259 PIC driver
 │   ├── interrupts.rs     # ISR stubs and handlers
@@ -119,7 +129,15 @@ ralph_os/
 │   ├── scheduler.rs      # Cooperative scheduler
 │   ├── task.rs           # Task struct and context
 │   ├── context_switch.rs # Context switch assembly
+│   ├── api.rs            # Kernel API for loaded programs
+│   ├── executable.rs     # ELF loader and memory tracking
+│   ├── elf.rs            # ELF format parser
 │   └── basic/            # BASIC interpreter
+│       ├── mod.rs        # Module and tasks
+│       ├── lexer.rs      # Tokenizer
+│       ├── parser.rs     # AST builder
+│       └── interpreter.rs# BASIC runtime
+├── programs/             # User programs (compiled to ELF)
 ├── kernel.ld             # Linker script
 └── x86_64-ralph_os.json  # Custom target spec
 ```
@@ -236,74 +254,127 @@ make image
     └── Combine: stage1 + stage2 + kernel → ralph_os.img
 ```
 
-## Heap Allocator
+## Memory Allocators
 
-### Memory Region
+### Kernel Heap (`src/allocator.rs`)
 
-```
-┌─────────────────────────────────────┐ 0x00400000 (4MB)
-│                                     │
-│        Heap (2MB)                   │
-│        Linked list allocator        │
-│                                     │
-├─────────────────────────────────────┤ 0x00200000 (2MB)
-│        Kernel                       │
-└─────────────────────────────────────┘ 0x00100000 (1MB)
-```
-
-### Linked List Allocator (`src/allocator.rs`)
-
-A first-fit linked list allocator implemented from scratch:
+A first-fit linked list allocator for kernel data structures:
 
 ```
+Region: 0x200000 - 0x400000 (2MB)
+
 Free Block Structure:
 ┌──────────────────────────────────────┐
 │ size: usize (8 bytes)                │
 │ next: Option<NonNull<FreeBlock>>     │
-│        (16 bytes with padding)       │
 ├──────────────────────────────────────┤
 │ ... usable memory ...                │
 └──────────────────────────────────────┘
 ```
 
-**Allocation Strategy:**
-1. First-fit search through free list
-2. Handle alignment requirements (align up to requested alignment)
-3. Split blocks if remaining space ≥ minimum block size (24 bytes)
-4. Return aligned pointer
+- First-fit allocation with block splitting
+- Deallocation with adjacent block merging
+- Spinlock wrapper for safety
 
-**Deallocation Strategy:**
-1. Create free block at deallocated address
-2. Insert into list (sorted by address for merging)
-3. Merge adjacent free blocks
+### Program Region (`src/program_alloc.rs`)
 
-**Thread Safety:**
-- Spinlock wrapper (`LockedAllocator`) protects all operations
-- Implements `GlobalAlloc` trait for Rust's `#[global_allocator]`
+A simple bump allocator for program memory:
 
-### Enabled Features
+```
+Region: 0x400000 - 0x1000000 (12MB)
 
-With the allocator, the `alloc` crate is available:
-- `alloc::vec::Vec` - Dynamic arrays
-- `alloc::string::String` - Heap-allocated strings
-- `alloc::boxed::Box` - Heap allocation wrapper
-- `alloc::collections::*` - BTreeMap, LinkedList, etc.
+Used for:
+- Task stacks (16KB each, ~768 max tasks)
+- Loaded ELF programs
+- User heap allocations (via API)
+```
 
-## Future Architecture (Planned)
+All allocations are tracked per-task and auto-freed on exit.
 
-### Phase 3: Cooperative Multitasking
-- Task struct with saved register state
-- Round-robin scheduler
-- `yield_now()` for voluntary yielding
-- All tasks share flat address space
+## Cooperative Multitasking
 
-### Phase 4: Shell
-- PS/2 keyboard driver
-- IDT setup for interrupts
-- Line-buffered input
-- Command parsing
+### Task Structure (`src/task.rs`)
 
-### Phase 5: Filesystem
-- In-memory filesystem
-- Directory tree structure
-- Basic file operations
+```rust
+pub struct Task {
+    id: TaskId,
+    name: &'static str,
+    state: TaskState,        // Ready, Running, Sleeping, Finished
+    context: Context,        // Saved CPU registers
+    stack_base: usize,       // Stack in program region
+    stack_size: usize,
+    wake_at: u64,            // Timer tick to wake (if sleeping)
+}
+```
+
+### Scheduler (`src/scheduler.rs`)
+
+Round-robin cooperative scheduler:
+- Tasks yield voluntarily via `yield_now()` or `sleep_ms()`
+- Timer-driven wake for sleeping tasks (100 Hz)
+- HLT-based idle when all tasks sleeping
+- Auto-cleanup of finished tasks
+
+### Context Switch (`src/context_switch.rs`)
+
+Saves/restores callee-saved registers (R12-R15, RBX, RBP, RSP).
+
+## Executable Loading
+
+### ELF Loader (`src/elf.rs`, `src/executable.rs`)
+
+Loads position-independent ELF64 executables:
+1. Parse ELF header and program headers
+2. Allocate memory in program region
+3. Load PT_LOAD segments
+4. Return entry point address
+
+### Kernel API (`src/api.rs`)
+
+Programs receive a pointer to the KernelApi struct:
+
+```rust
+pub struct KernelApi {
+    version: u32,                              // API version (currently 2)
+    print: extern "C" fn(*const u8, usize),    // Print string
+    yield_now: extern "C" fn(),                // Yield to scheduler
+    sleep_ms: extern "C" fn(u64),              // Sleep milliseconds
+    exit: extern "C" fn() -> !,                // Exit program
+    alloc: extern "C" fn(usize) -> *mut u8,    // Allocate (4KB aligned)
+    free: extern "C" fn(*mut u8),              // Free (kernel tracks size)
+}
+```
+
+### Per-Task Memory Tracking (`src/executable.rs`)
+
+```rust
+struct TaskAllocations {
+    stack: (usize, usize),              // Always present
+    program: Option<(usize, usize)>,    // Only for ELF programs
+    heap_blocks: Vec<(usize, usize)>,   // User allocations via alloc()
+}
+```
+
+Safety features:
+- Ownership verification on free()
+- Auto-cleanup when task exits
+- 4KB allocation granularity
+
+## BASIC Interpreter
+
+Interactive BASIC REPL with line-numbered programs:
+
+### Supported Commands
+- `PRINT expr` - Output values
+- `LET var = expr` - Variable assignment
+- `INPUT var` - Read user input
+- `FOR/NEXT` - Counting loops
+- `IF/THEN/ELSE` - Conditionals
+- `GOTO line` - Jump to line
+- `GOSUB/RETURN` - Subroutines
+- `SPAWN "name"` - Run program in background
+- `RUN/LIST/NEW` - Program control
+
+### Tasks
+- `memstats_task` - Periodic heap usage display
+- `repl_task` - Interactive interpreter
