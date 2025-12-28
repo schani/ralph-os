@@ -15,6 +15,7 @@ pub mod icmp;
 pub mod ipv4;
 pub mod ne2000;
 pub mod packet;
+pub mod tcp;
 
 use crate::println;
 
@@ -68,7 +69,8 @@ pub fn network_task() {
             packet::release_rx_buffer();
         }
 
-        // TODO: Process TCP timers
+        // Process TCP timers
+        tcp::process_timers();
 
         // Process ARP cache expiry
         arp::expire_old_entries();

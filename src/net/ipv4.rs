@@ -224,9 +224,7 @@ pub fn process_packet(data: &[u8]) {
             super::icmp::process_packet(&header, payload);
         }
         PROTO_TCP => {
-            // TODO: Process TCP packet
-            println!("[ipv4] TCP packet from {}.{}.{}.{}",
-                header.src_ip[0], header.src_ip[1], header.src_ip[2], header.src_ip[3]);
+            super::tcp::process_packet(&header, payload);
         }
         _ => {
             // Unknown protocol, ignore
