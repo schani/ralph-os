@@ -11,6 +11,8 @@
 pub mod arp;
 pub mod checksum;
 pub mod ethernet;
+pub mod icmp;
+pub mod ipv4;
 pub mod ne2000;
 pub mod packet;
 
@@ -97,8 +99,7 @@ fn process_rx_packet(data: &[u8], len: usize) {
             arp::process_packet(payload);
         }
         ethernet::ETHERTYPE_IPV4 => {
-            // TODO: Process IPv4 packet
-            println!("[net] IPv4 packet ({} bytes)", payload.len());
+            ipv4::process_packet(payload);
         }
         _ => {
             // Unknown protocol, ignore
