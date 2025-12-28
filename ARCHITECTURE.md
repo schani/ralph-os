@@ -331,11 +331,14 @@ Loads position-independent ELF64 executables:
 
 ### Kernel API (`src/api.rs`)
 
-Programs receive a pointer to the KernelApi struct:
+Programs receive a pointer to the KernelApi struct and a NULL-terminated argv array:
 
 ```rust
+// Entry point signature
+type ProgramEntry = extern "C" fn(api: &'static KernelApi, argv: *const *const u8);
+
 pub struct KernelApi {
-    version: u32,                              // API version (currently 2)
+    version: u32,                              // API version (currently 3)
     print: extern "C" fn(*const u8, usize),    // Print string
     yield_now: extern "C" fn(),                // Yield to scheduler
     sleep_ms: extern "C" fn(u64),              // Sleep milliseconds
@@ -344,6 +347,8 @@ pub struct KernelApi {
     free: extern "C" fn(*mut u8),              // Free (kernel tracks size)
 }
 ```
+
+argv[0] is always the program name (Unix convention). Programs iterate until NULL.
 
 ### Per-Task Memory Tracking (`src/executable.rs`)
 
@@ -372,7 +377,7 @@ Interactive BASIC REPL with line-numbered programs:
 - `IF/THEN/ELSE` - Conditionals
 - `GOTO line` - Jump to line
 - `GOSUB/RETURN` - Subroutines
-- `SPAWN "name"` - Run program in background
+- `SPAWN "name", "arg1", ...` - Run program in background with arguments
 - `RUN/LIST/NEW` - Program control
 
 ### Tasks
