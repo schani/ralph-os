@@ -20,6 +20,8 @@ mod scheduler;
 mod serial;
 mod task;
 mod timer;
+mod vga;
+mod memvis;
 
 use core::panic::PanicInfo;
 
@@ -47,6 +49,9 @@ pub extern "C" fn kernel_main() -> ! {
     // Initialize serial port
     serial::init();
 
+    // Initialize VGA if debug mode enabled
+    vga::init();
+
     // Welcome
     println!("Hello, Ralph OS!");
     println!("Kernel loaded at 0x100000");
@@ -62,6 +67,9 @@ pub extern "C" fn kernel_main() -> ! {
         HEAP_START + HEAP_SIZE,
         HEAP_SIZE / 1024
     );
+
+    // Initialize memory visualizer (draws initial state if VGA enabled)
+    memvis::init();
 
     // Initialize PIC
     println!("\nInitializing PIC...");

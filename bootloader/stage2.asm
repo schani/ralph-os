@@ -30,6 +30,9 @@ start:
     ; Enable A20 line
     call enable_a20
 
+    ; Check VGA debug flag and set mode 13h if enabled
+    call check_vga_flag
+
     ; Load kernel from disk (still in real mode, need BIOS)
     call load_kernel
 
@@ -50,6 +53,37 @@ start:
 ; ============================================================================
 ; 16-bit helper functions
 ; ============================================================================
+
+; Check if VGA debug flag is set in the vga_flag variable
+; If set, switch to VGA mode 13h (320x200x256)
+; The vga_flag variable is at a fixed offset that can be patched by the Makefile
+check_vga_flag:
+    ; Debug: always print to verify this code runs
+    mov si, msg_check_vga
+    call print_string
+
+    ; Read flag from our local variable
+    mov al, [vga_flag]
+    cmp al, 0x01
+    jne .skip_vga
+
+    ; Set VGA mode 13h
+    mov si, msg_vga
+    call print_string
+    mov ah, 0x00
+    mov al, 0x13            ; Mode 13h: 320x200x256
+    int 0x10
+
+    ; Store VGA status at 0x501 for kernel to read
+    xor ax, ax
+    mov es, ax
+    mov byte [es:0x501], 0x13
+
+    mov si, msg_ok
+    call print_string
+
+.skip_vga:
+    ret
 
 enable_a20:
     ; Try keyboard controller method
@@ -437,7 +471,11 @@ long_mode:
 ; ============================================================================
 
 boot_drive:     db 0
+vga_flag:       db 0                ; VGA debug flag: 0=disabled, 1=enable VGA mode 13h
+                                    ; Offset from start of stage2: can be patched by Makefile
 msg_stage2:     db "Stage 2: ", 0
+msg_check_vga:  db "Checking VGA...", 0
+msg_vga:        db "VGA mode 13h...", 0
 msg_a20:        db "A20 line...", 0
 msg_kernel:     db "Loading kernel...", 0
 msg_ok:         db " OK", 13, 10, 0

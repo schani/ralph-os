@@ -117,6 +117,9 @@ impl LinkedListAllocator {
                     self.add_free_block(new_block);
                 }
 
+                // Notify memory visualizer of allocation
+                crate::memvis::on_alloc(aligned_start, size);
+
                 return aligned_start as *mut u8;
             }
 
@@ -136,6 +139,9 @@ impl LinkedListAllocator {
     pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
         let size = layout.size().max(MIN_BLOCK_SIZE);
         let addr = ptr as usize;
+
+        // Notify memory visualizer of deallocation
+        crate::memvis::on_dealloc(addr, size);
 
         // Create a new free block
         let block = FreeBlock::new(addr, size);

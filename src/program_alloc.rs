@@ -134,6 +134,10 @@ impl ProgramAllocator {
                 }
 
                 self.allocated += size;
+
+                // Notify memory visualizer of allocation
+                crate::memvis::on_alloc(region_start, size);
+
                 return Some(region_start);
             }
 
@@ -152,6 +156,9 @@ impl ProgramAllocator {
     /// - size must match the original allocation size (rounded to PAGE_SIZE)
     pub unsafe fn deallocate(&mut self, addr: usize, size: usize) {
         let size = Self::align_up(size).max(MIN_BLOCK_SIZE);
+
+        // Notify memory visualizer of deallocation
+        crate::memvis::on_dealloc(addr, size);
 
         // Create a new free region
         let new_region = FreeRegion::new(addr, size);

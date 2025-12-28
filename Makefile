@@ -147,6 +147,40 @@ run-net-tap: image
 		-netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
 		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 
+# VGA flag offset: stage2 starts at byte 512, vga_flag is at offset 876 within stage2
+VGA_FLAG_OFFSET = 1388
+
+# Run with VGA memory visualization (patches vga_flag in stage2)
+run-vga: image
+	@echo "Enabling VGA visualization..."
+	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	$(QEMU) \
+		-drive format=raw,file=$(OS_IMAGE) \
+		-serial stdio \
+		-no-reboot
+
+# Test VGA visualization with automated screenshot
+test-vga: image
+	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	@rm -f /tmp/qemu-monitor.sock /tmp/vga-test.ppm /tmp/serial.txt
+	@$(QEMU) \
+		-drive format=raw,file=$(OS_IMAGE) \
+		-serial file:/tmp/serial.txt \
+		-display none \
+		-device VGA \
+		-monitor unix:/tmp/qemu-monitor.sock,server,nowait \
+		-no-reboot &
+	@sleep 3
+	@echo "screendump /tmp/vga-test.ppm" | nc -U /tmp/qemu-monitor.sock 2>/dev/null || true
+	@sleep 1
+	@pkill -f "qemu.*ralph_os.img" 2>/dev/null || true
+	@echo ""
+	@echo "=== Serial Output ==="
+	@cat /tmp/serial.txt 2>/dev/null || echo "(no output)"
+	@echo ""
+	@echo "=== VGA Screenshot ==="
+	@ls -la /tmp/vga-test.ppm 2>/dev/null && head -2 /tmp/vga-test.ppm || echo "ERROR: Screenshot not created"
+
 # Run with QEMU debug output
 debug: image
 	$(QEMU) \
@@ -195,6 +229,8 @@ help:
 	@echo "  run         - Build and run in QEMU"
 	@echo "  run-net     - Run with NE2000 network (user mode)"
 	@echo "  run-net-tap - Run with TAP networking (requires sudo, enables ping)"
+	@echo "  run-vga     - Run with VGA memory visualization"
+	@echo "  test-vga    - Test VGA visualization with automated screenshot"
 	@echo "  debug       - Run with QEMU interrupt logging"
 	@echo "  gdb         - Run with GDB server on port 1234"
 	@echo "  clean       - Remove build artifacts"
