@@ -151,24 +151,27 @@ run-net-tap: image
 # Disk offset = 512 (stage1) + 8191 = 8703
 VGA_FLAG_OFFSET = 8703
 
-# Run with VGA memory visualization (patches vga_flag in stage2)
+# Run with VGA memory visualization (headless - serial output only)
 run-vga: image
 	@echo "Enabling VGA visualization..."
 	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
 	$(QEMU) \
 		-drive format=raw,file=$(OS_IMAGE) \
 		-serial stdio \
+		-display none \
+		-device VGA \
 		-no-reboot
 
-# Run with VGA and mouse support (for interactive memory exploration)
+# Run with VGA and mouse support (GUI window for interactive use)
 run-vga-mouse: image
 	@echo "Enabling VGA visualization with mouse..."
 	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
 	$(QEMU) \
 		-drive format=raw,file=$(OS_IMAGE) \
 		-serial stdio \
-		-no-reboot \
-		-display gtk
+		-display sdl \
+		-device VGA \
+		-no-reboot
 
 # Test VGA visualization with automated screenshot
 test-vga: image
