@@ -8,8 +8,9 @@
 //! - IRQ handler only copies packets to pre-allocated ring buffer
 //! - User programs use non-blocking socket API
 
-pub mod packet;
 pub mod checksum;
+pub mod ne2000;
+pub mod packet;
 
 use crate::println;
 

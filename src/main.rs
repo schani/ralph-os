@@ -88,6 +88,14 @@ pub extern "C" fn kernel_main() -> ! {
     println!("\nInitializing scheduler...");
     scheduler::init();
 
+    // Initialize network subsystem
+    println!("\nInitializing network...");
+    net::init();
+    if net::ne2000::init() {
+        pic::enable_irq(10);  // Enable NE2000 IRQ
+        println!("IRQ10 enabled (NE2000)");
+    }
+
     // Initialize executable subsystem
     println!("\nInitializing executable loader...");
     match executable::init() {
@@ -104,8 +112,14 @@ pub extern "C" fn kernel_main() -> ! {
         }
     }
 
-    // Spawn BASIC tasks
+    // Spawn tasks
     println!("\nSpawning tasks...");
+    if net::ne2000::is_initialized() {
+        match scheduler::spawn("network", net::network_task) {
+            Some(_) => println!("  - network: Network protocol handler"),
+            None => println!("  - network: FAILED (out of memory)"),
+        }
+    }
     match scheduler::spawn("memstats", basic::memstats_task) {
         Some(_) => println!("  - memstats: Memory monitor (BASIC)"),
         None => println!("  - memstats: FAILED (out of memory)"),

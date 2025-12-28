@@ -2,6 +2,7 @@
 //!
 //! Contains assembly stubs that save/restore state and call Rust handlers.
 
+use crate::net;
 use crate::pic;
 use crate::timer;
 
@@ -64,6 +65,55 @@ pub unsafe extern "C" fn isr_timer() {
         "iretq",
 
         handler = sym timer_handler,
+    );
+}
+
+/// NE2000 network card interrupt handler (IRQ10 -> interrupt 42)
+///
+/// This is called by the assembly stub after saving registers.
+#[no_mangle]
+extern "C" fn ne2000_handler() {
+    // Handle the interrupt (reads packets into buffer pool)
+    net::ne2000::handle_interrupt();
+
+    // Send End-Of-Interrupt to both PICs (IRQ10 is on slave PIC)
+    pic::send_eoi(10);
+}
+
+/// NE2000 ISR stub - saves state, calls handler, restores state
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn isr_ne2000() {
+    core::arch::naked_asm!(
+        // Save all caller-saved registers
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+
+        // Call the Rust handler
+        "call {handler}",
+
+        // Restore registers
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+
+        // Return from interrupt
+        "iretq",
+
+        handler = sym ne2000_handler,
     );
 }
 
