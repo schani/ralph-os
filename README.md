@@ -70,14 +70,16 @@ make setup
 
 ### Make Targets
 
-| Command       | Description                              |
-|---------------|------------------------------------------|
-| `make build`  | Build the kernel image                   |
-| `make run`    | Build and run in QEMU                    |
-| `make debug`  | Run with QEMU interrupt logging          |
-| `make gdb`    | Run with GDB server (port 1234)          |
-| `make clean`  | Remove build artifacts                   |
-| `make setup`  | Install required Rust tools (run once)   |
+| Command           | Description                              |
+|-------------------|------------------------------------------|
+| `make build`      | Build the kernel image                   |
+| `make run`        | Build and run in QEMU                    |
+| `make run-net`    | Run with NE2000 network (user mode)      |
+| `make run-net-tap`| Run with TAP networking (ping support)   |
+| `make debug`      | Run with QEMU interrupt logging          |
+| `make gdb`        | Run with GDB server (port 1234)          |
+| `make clean`      | Remove build artifacts                   |
+| `make setup`      | Install required Rust tools (run once)   |
 
 ### Manual Build
 
@@ -103,6 +105,54 @@ make gdb
 gdb -ex "target remote :1234"
 ```
 
+## Networking
+
+Ralph OS includes a TCP/IP network stack with:
+- NE2000 NIC driver
+- Ethernet, ARP, IPv4, ICMP, TCP protocols
+- Non-blocking socket API for user programs
+
+### Running with Network
+
+```bash
+# Run with QEMU user-mode networking (no ping from host)
+make run-net
+```
+
+Network configuration (QEMU user networking defaults):
+- IP: `10.0.2.15`
+- Netmask: `255.255.255.0`
+- Gateway: `10.0.2.2`
+
+### Pinging Ralph OS
+
+QEMU's user-mode networking doesn't forward inbound ICMP. To ping the VM, use TAP networking:
+
+```bash
+# 1. Create TAP interface (one-time setup, requires root)
+sudo ip tuntap add dev tap0 mode tap user $USER
+sudo ip addr add 10.0.2.1/24 dev tap0
+sudo ip link set tap0 up
+
+# 2. Run Ralph OS with TAP networking
+make run-net-tap
+
+# 3. In another terminal, ping the VM
+ping 10.0.2.15
+```
+
+You should see output like:
+```
+[icmp] Echo request from 10.0.2.1 seq=1
+[icmp] Sent echo reply to 10.0.2.1 seq=1
+```
+
+To clean up the TAP interface:
+```bash
+sudo ip link set tap0 down
+sudo ip tuntap del dev tap0 mode tap
+```
+
 ## Project Structure
 
 ```
@@ -113,7 +163,15 @@ ralph_os/
 ├── src/
 │   ├── main.rs             # Kernel entry point
 │   ├── serial.rs           # Custom UART 16550 driver
-│   └── allocator.rs        # Linked list heap allocator
+│   ├── allocator.rs        # Linked list heap allocator
+│   ├── scheduler.rs        # Cooperative task scheduler
+│   ├── api.rs              # Kernel API for programs
+│   ├── basic/              # BASIC interpreter
+│   └── net/                # TCP/IP network stack
+│       ├── ne2000.rs       # NE2000 NIC driver
+│       ├── tcp.rs          # TCP state machine
+│       └── ...             # Ethernet, ARP, IPv4, ICMP
+├── programs/               # User programs (compiled to ELF)
 ├── Cargo.toml              # Project manifest (no dependencies!)
 ├── Makefile                # Build commands
 ├── kernel.ld               # Kernel linker script
@@ -130,6 +188,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 
 1. ~~**Phase 1**: Hello World kernel with serial output~~ **DONE**
 2. ~~**Phase 2**: Heap allocator (linked list)~~ **DONE**
-3. **Phase 3** (next): Cooperative multitasking scheduler
-4. **Phase 4**: Keyboard input and interactive shell
-5. **Phase 5**: In-memory filesystem
+3. ~~**Phase 3**: Cooperative multitasking scheduler~~ **DONE**
+4. ~~**Phase 4**: BASIC interpreter~~ **DONE**
+5. ~~**Phase 5**: ELF program loading~~ **DONE**
+6. ~~**Phase 6**: TCP/IP networking~~ **DONE**
+7. **Phase 7** (next): Keyboard input and interactive shell
+8. **Phase 8**: In-memory filesystem

@@ -1,4 +1,4 @@
-.PHONY: all build run debug clean setup help bootloader kernel image programs
+.PHONY: all build run run-net debug clean setup help bootloader kernel image programs
 
 # Output files
 BUILD_DIR       = target
@@ -124,6 +124,29 @@ run: image
 		-display none \
 		-no-reboot
 
+# Run with networking (NE2000 NIC)
+run-net: image
+	$(QEMU) \
+		-drive format=raw,file=$(OS_IMAGE) \
+		-serial stdio \
+		-display none \
+		-no-reboot \
+		-netdev user,id=net0 \
+		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
+
+# Run with TAP networking for ping testing (requires sudo)
+# First: sudo ip tuntap add dev tap0 mode tap user $$USER
+#        sudo ip addr add 10.0.2.1/24 dev tap0
+#        sudo ip link set tap0 up
+run-net-tap: image
+	sudo $(QEMU) \
+		-drive format=raw,file=$(OS_IMAGE) \
+		-serial stdio \
+		-display none \
+		-no-reboot \
+		-netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
+		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
+
 # Run with QEMU debug output
 debug: image
 	$(QEMU) \
@@ -164,14 +187,16 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all       - Build everything (default)"
-	@echo "  bootloader- Build bootloader only"
-	@echo "  kernel    - Build kernel only"
-	@echo "  programs  - Build all programs"
-	@echo "  image     - Create bootable disk image"
-	@echo "  run       - Build and run in QEMU"
-	@echo "  debug     - Run with QEMU interrupt logging"
-	@echo "  gdb       - Run with GDB server on port 1234"
-	@echo "  clean     - Remove build artifacts"
-	@echo "  setup     - Install required tools"
-	@echo "  help      - Show this message"
+	@echo "  all         - Build everything (default)"
+	@echo "  bootloader  - Build bootloader only"
+	@echo "  kernel      - Build kernel only"
+	@echo "  programs    - Build all programs"
+	@echo "  image       - Create bootable disk image"
+	@echo "  run         - Build and run in QEMU"
+	@echo "  run-net     - Run with NE2000 network (user mode)"
+	@echo "  run-net-tap - Run with TAP networking (requires sudo, enables ping)"
+	@echo "  debug       - Run with QEMU interrupt logging"
+	@echo "  gdb         - Run with GDB server on port 1234"
+	@echo "  clean       - Remove build artifacts"
+	@echo "  setup       - Install required tools"
+	@echo "  help        - Show this message"
