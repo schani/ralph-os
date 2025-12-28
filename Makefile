@@ -151,21 +151,18 @@ run-net-tap: image
 # Disk offset = 512 (stage1) + 8191 = 8703
 VGA_FLAG_OFFSET = 8703
 
-# Run with VGA memory visualization (headless - serial output only)
+# Run with VGA memory visualization (headless - serial output to file then displayed)
 run-vga: image
 	@echo "Enabling VGA visualization..."
-	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
-	$(QEMU) \
-		-drive format=raw,file=$(OS_IMAGE) \
-		-serial stdio \
-		-display none \
-		-device VGA \
-		-no-reboot
+	@/bin/bash -c "echo -ne '\x01'" | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	@rm -f /tmp/ralph_serial.txt
+	timeout 5s $(QEMU) -drive format=raw,file=$(OS_IMAGE) -serial file:/tmp/ralph_serial.txt -display none -device VGA -no-reboot || true
+	@cat /tmp/ralph_serial.txt
 
 # Run with VGA and mouse support (GUI window for interactive use)
 run-vga-mouse: image
 	@echo "Enabling VGA visualization with mouse..."
-	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	@/bin/bash -c "echo -ne '\x01'" | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
 	$(QEMU) \
 		-drive format=raw,file=$(OS_IMAGE) \
 		-serial stdio \
@@ -175,7 +172,7 @@ run-vga-mouse: image
 
 # Test VGA visualization with automated screenshot
 test-vga: image
-	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	@/bin/bash -c "echo -ne '\x01'" | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
 	@rm -f /tmp/qemu-monitor.sock /tmp/vga-test.ppm /tmp/serial.txt
 	@$(QEMU) \
 		-drive format=raw,file=$(OS_IMAGE) \
