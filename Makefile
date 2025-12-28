@@ -39,11 +39,11 @@ $(BUILD_DIR)/programs:
 $(STAGE1): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
 	$(NASM) -f bin -o $@ $<
 
-# Build stage 2 bootloader (padded to 8KB = 16 sectors)
+# Build stage 2 bootloader (exactly 8KB = 16 sectors, with vga_flag at last byte)
 $(STAGE2): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 	$(NASM) -f bin -o $@ $<
-	@# Pad to exactly 8KB (16 sectors)
-	@truncate -s 8192 $@
+	@# Verify size is exactly 8KB (NASM TIMES directive should ensure this)
+	@test $$(stat -c %s $@) -eq 8192 || (echo "ERROR: stage2 must be exactly 8KB"; exit 1)
 
 # Build bootloader (both stages)
 bootloader: $(STAGE1) $(STAGE2)
@@ -147,8 +147,9 @@ run-net-tap: image
 		-netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
 		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 
-# VGA flag offset: stage2 starts at byte 512, vga_flag is at offset 880 within stage2
-VGA_FLAG_OFFSET = 1392
+# VGA flag offset: vga_flag is at FIXED offset 8191 within stage2 (last byte of 8KB)
+# Disk offset = 512 (stage1) + 8191 = 8703
+VGA_FLAG_OFFSET = 8703
 
 # Run with VGA memory visualization (patches vga_flag in stage2)
 run-vga: image

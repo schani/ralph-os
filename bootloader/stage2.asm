@@ -58,10 +58,6 @@ start:
 ; If set, switch to VGA mode 13h (320x200x256)
 ; The vga_flag variable is at a fixed offset that can be patched by the Makefile
 check_vga_flag:
-    ; Debug: always print to verify this code runs
-    mov si, msg_check_vga
-    call print_string
-
     ; Read flag from our local variable
     mov al, [vga_flag]
     cmp al, 0x01
@@ -471,10 +467,7 @@ long_mode:
 ; ============================================================================
 
 boot_drive:     db 0
-vga_flag:       db 0                ; VGA debug flag: 0=disabled, 1=enable VGA mode 13h
-                                    ; Offset from start of stage2: can be patched by Makefile
 msg_stage2:     db "Stage 2: ", 0
-msg_check_vga:  db "Checking VGA...", 0
 msg_vga:        db "VGA mode 13h...", 0
 msg_a20:        db "A20 line...", 0
 msg_kernel:     db "Loading kernel...", 0
@@ -531,3 +524,11 @@ gdt_descriptor:
 
 ; End marker for size calculation
 stage2_end:
+
+; ============================================================================
+; VGA flag at FIXED offset 8191 (last byte of 8KB stage2)
+; Disk offset = 512 + 8191 = 8703
+; This prevents offset changes when code above changes
+; ============================================================================
+TIMES 8191 - ($ - $$) db 0
+vga_flag:   db 0        ; 0=text mode, 1=VGA mode 13h (patched by Makefile)
