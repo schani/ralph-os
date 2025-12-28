@@ -151,22 +151,23 @@ run-net-tap: image
 # Disk offset = 512 (stage1) + 8191 = 8703
 VGA_FLAG_OFFSET = 8703
 
-# Run with VGA memory visualization (headless - serial output to file then displayed)
+# Run with VGA memory visualization (same as run, but with VGA mode enabled)
 run-vga: image
-	@echo "Enabling VGA visualization..."
-	@/bin/bash -c "echo -ne '\x01'" | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
-	@rm -f /tmp/ralph_serial.txt
-	timeout 5s $(QEMU) -drive format=raw,file=$(OS_IMAGE) -serial file:/tmp/ralph_serial.txt -display none -device VGA -no-reboot || true
-	@cat /tmp/ralph_serial.txt
-
-# Run with VGA and mouse support (GUI window for interactive use)
-run-vga-mouse: image
-	@echo "Enabling VGA visualization with mouse..."
 	@/bin/bash -c "echo -ne '\x01'" | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
 	$(QEMU) \
 		-drive format=raw,file=$(OS_IMAGE) \
 		-serial stdio \
-		-display sdl \
+		-display gtk \
+		-device VGA \
+		-no-reboot
+
+# Run with VGA and mouse support (click in window to grab mouse, Ctrl+Alt+G to release)
+run-vga-mouse: image
+	@/bin/bash -c "echo -ne '\x01'" | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	$(QEMU) \
+		-drive format=raw,file=$(OS_IMAGE) \
+		-serial stdio \
+		-display gtk \
 		-device VGA \
 		-no-reboot
 
