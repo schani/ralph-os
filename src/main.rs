@@ -13,6 +13,7 @@ mod executable;
 mod idt;
 mod interrupts;
 mod io;
+mod net;
 mod pic;
 mod program_alloc;
 mod scheduler;
