@@ -4,6 +4,7 @@
 //! Uses interrupt-driven tick counting for accurate timekeeping.
 
 use crate::io::outb;
+use crate::{cursor, vga};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 // PIT I/O ports
@@ -44,6 +45,11 @@ pub fn init() {
 /// It should not be called from anywhere else.
 pub fn tick() {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Update mouse cursor if VGA mode is active
+    if vga::is_enabled() {
+        cursor::update();
+    }
 }
 
 /// Get the current tick count since boot

@@ -147,8 +147,8 @@ run-net-tap: image
 		-netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
 		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 
-# VGA flag offset: stage2 starts at byte 512, vga_flag is at offset 876 within stage2
-VGA_FLAG_OFFSET = 1388
+# VGA flag offset: stage2 starts at byte 512, vga_flag is at offset 880 within stage2
+VGA_FLAG_OFFSET = 1392
 
 # Run with VGA memory visualization (patches vga_flag in stage2)
 run-vga: image
@@ -158,6 +158,16 @@ run-vga: image
 		-drive format=raw,file=$(OS_IMAGE) \
 		-serial stdio \
 		-no-reboot
+
+# Run with VGA and mouse support (for interactive memory exploration)
+run-vga-mouse: image
+	@echo "Enabling VGA visualization with mouse..."
+	@printf '\x01' | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	$(QEMU) \
+		-drive format=raw,file=$(OS_IMAGE) \
+		-serial stdio \
+		-no-reboot \
+		-display gtk
 
 # Test VGA visualization with automated screenshot
 test-vga: image
@@ -230,6 +240,7 @@ help:
 	@echo "  run-net     - Run with NE2000 network (user mode)"
 	@echo "  run-net-tap - Run with TAP networking (requires sudo, enables ping)"
 	@echo "  run-vga     - Run with VGA memory visualization"
+	@echo "  run-vga-mouse - Run with VGA + mouse pointer and tooltip"
 	@echo "  test-vga    - Test VGA visualization with automated screenshot"
 	@echo "  debug       - Run with QEMU interrupt logging"
 	@echo "  gdb         - Run with GDB server on port 1234"

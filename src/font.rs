@@ -1,0 +1,214 @@
+//! 8x8 Bitmap Font
+//!
+//! Provides a minimal bitmap font for VGA text rendering.
+//! Includes hex digits (0-9, A-F), basic letters, and punctuation.
+
+use crate::vga;
+
+/// Font glyph data - each character is 8 bytes (8 rows of 8 pixels)
+/// Bit 7 = leftmost pixel, bit 0 = rightmost pixel
+const FONT_DATA: &[u8] = &[
+    // '0' (index 0)
+    0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00,
+    // '1' (index 1)
+    0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00,
+    // '2' (index 2)
+    0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00,
+    // '3' (index 3)
+    0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00,
+    // '4' (index 4)
+    0x0C, 0x1C, 0x3C, 0x6C, 0x7E, 0x0C, 0x0C, 0x00,
+    // '5' (index 5)
+    0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00,
+    // '6' (index 6)
+    0x1C, 0x30, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00,
+    // '7' (index 7)
+    0x7E, 0x06, 0x0C, 0x18, 0x18, 0x18, 0x18, 0x00,
+    // '8' (index 8)
+    0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00,
+    // '9' (index 9)
+    0x3C, 0x66, 0x66, 0x3E, 0x06, 0x0C, 0x38, 0x00,
+    // 'A' (index 10)
+    0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x00,
+    // 'B' (index 11)
+    0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00,
+    // 'C' (index 12)
+    0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00,
+    // 'D' (index 13)
+    0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00,
+    // 'E' (index 14)
+    0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00,
+    // 'F' (index 15)
+    0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00,
+    // 'a' (index 16)
+    0x00, 0x00, 0x3C, 0x06, 0x3E, 0x66, 0x3E, 0x00,
+    // 'c' (index 17)
+    0x00, 0x00, 0x3C, 0x60, 0x60, 0x60, 0x3C, 0x00,
+    // 'd' (index 18)
+    0x06, 0x06, 0x3E, 0x66, 0x66, 0x66, 0x3E, 0x00,
+    // 'e' (index 19)
+    0x00, 0x00, 0x3C, 0x66, 0x7E, 0x60, 0x3C, 0x00,
+    // 'f' (index 20)
+    0x0E, 0x18, 0x18, 0x3E, 0x18, 0x18, 0x18, 0x00,
+    // 'l' (index 21)
+    0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x0E, 0x00,
+    // 'o' (index 22)
+    0x00, 0x00, 0x3C, 0x66, 0x66, 0x66, 0x3C, 0x00,
+    // 'r' (index 23)
+    0x00, 0x00, 0x6C, 0x76, 0x60, 0x60, 0x60, 0x00,
+    // 't' (index 24)
+    0x18, 0x18, 0x7E, 0x18, 0x18, 0x18, 0x0E, 0x00,
+    // 'x' (index 25)
+    0x00, 0x00, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x00,
+    // 'H' (index 26)
+    0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00,
+    // 'K' (index 27)
+    0x66, 0x6C, 0x78, 0x70, 0x78, 0x6C, 0x66, 0x00,
+    // 'P' (index 28)
+    0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00,
+    // 'g' (index 29)
+    0x00, 0x00, 0x3E, 0x66, 0x66, 0x3E, 0x06, 0x3C,
+    // 'm' (index 30)
+    0x00, 0x00, 0x76, 0x7F, 0x6B, 0x63, 0x63, 0x00,
+    // ' ' (space, index 31)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // '-' (index 32)
+    0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00,
+    // '(' (index 33)
+    0x0C, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00,
+    // ')' (index 34)
+    0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00,
+    // 'n' (index 35)
+    0x00, 0x00, 0x7C, 0x66, 0x66, 0x66, 0x66, 0x00,
+    // 'p' (index 36)
+    0x00, 0x00, 0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60,
+    // 'i' (index 37)
+    0x18, 0x00, 0x38, 0x18, 0x18, 0x18, 0x3C, 0x00,
+    // 'k' (index 38)
+    0x60, 0x60, 0x66, 0x6C, 0x78, 0x6C, 0x66, 0x00,
+    // 's' (index 39)
+    0x00, 0x00, 0x3E, 0x60, 0x3C, 0x06, 0x7C, 0x00,
+    // 'u' (index 40)
+    0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x3E, 0x00,
+    // 'b' (index 41)
+    0x60, 0x60, 0x7C, 0x66, 0x66, 0x66, 0x7C, 0x00,
+];
+
+/// Get the glyph index for a character
+fn char_to_index(c: char) -> Option<usize> {
+    match c {
+        '0'..='9' => Some((c as usize) - ('0' as usize)),
+        'A'..='F' => Some((c as usize) - ('A' as usize) + 10),
+        'a' => Some(16),
+        'c' => Some(17),
+        'd' => Some(18),
+        'e' => Some(19),
+        'f' => Some(20),
+        'l' => Some(21),
+        'o' => Some(22),
+        'r' => Some(23),
+        't' => Some(24),
+        'x' => Some(25),
+        'H' => Some(26),
+        'K' => Some(27),
+        'P' => Some(28),
+        'g' => Some(29),
+        'm' => Some(30),
+        ' ' => Some(31),
+        '-' => Some(32),
+        '(' => Some(33),
+        ')' => Some(34),
+        'n' => Some(35),
+        'p' => Some(36),
+        'i' => Some(37),
+        'k' => Some(38),
+        's' => Some(39),
+        'u' => Some(40),
+        'b' => Some(41),
+        _ => None,
+    }
+}
+
+/// Get glyph data for a character (8 bytes)
+fn get_glyph(c: char) -> &'static [u8] {
+    match char_to_index(c) {
+        Some(idx) => {
+            let offset = idx * 8;
+            &FONT_DATA[offset..offset + 8]
+        }
+        None => &FONT_DATA[31 * 8..32 * 8], // Return space for unknown chars
+    }
+}
+
+/// Draw a single character at (x, y)
+pub fn draw_char(x: usize, y: usize, c: char, color: u8) {
+    let glyph = get_glyph(c);
+    for row in 0..8 {
+        let bits = glyph[row];
+        for col in 0..8 {
+            if bits & (0x80 >> col) != 0 {
+                vga::set_pixel(x + col, y + row, color);
+            }
+        }
+    }
+}
+
+/// Draw a single character with background color
+pub fn draw_char_bg(x: usize, y: usize, c: char, fg: u8, bg: u8) {
+    let glyph = get_glyph(c);
+    for row in 0..8 {
+        let bits = glyph[row];
+        for col in 0..8 {
+            let color = if bits & (0x80 >> col) != 0 { fg } else { bg };
+            vga::set_pixel(x + col, y + row, color);
+        }
+    }
+}
+
+/// Draw a string at (x, y)
+pub fn draw_string(x: usize, y: usize, s: &str, color: u8) {
+    for (i, c) in s.chars().enumerate() {
+        draw_char(x + i * 8, y, c, color);
+    }
+}
+
+/// Draw a string with background color
+pub fn draw_string_bg(x: usize, y: usize, s: &str, fg: u8, bg: u8) {
+    for (i, c) in s.chars().enumerate() {
+        draw_char_bg(x + i * 8, y, c, fg, bg);
+    }
+}
+
+/// Draw a hexadecimal number (with 0x prefix)
+pub fn draw_hex(x: usize, y: usize, value: usize, digits: usize, color: u8) {
+    draw_string(x, y, "0x", color);
+    let hex_x = x + 16; // After "0x"
+
+    for i in 0..digits {
+        let shift = (digits - 1 - i) * 4;
+        let nibble = ((value >> shift) & 0xF) as u8;
+        let c = if nibble < 10 {
+            (b'0' + nibble) as char
+        } else {
+            (b'A' + nibble - 10) as char
+        };
+        draw_char(hex_x + i * 8, y, c, color);
+    }
+}
+
+/// Draw a hexadecimal number with background
+pub fn draw_hex_bg(x: usize, y: usize, value: usize, digits: usize, fg: u8, bg: u8) {
+    draw_string_bg(x, y, "0x", fg, bg);
+    let hex_x = x + 16;
+
+    for i in 0..digits {
+        let shift = (digits - 1 - i) * 4;
+        let nibble = ((value >> shift) & 0xF) as u8;
+        let c = if nibble < 10 {
+            (b'0' + nibble) as char
+        } else {
+            (b'A' + nibble - 10) as char
+        };
+        draw_char_bg(hex_x + i * 8, y, c, fg, bg);
+    }
+}

@@ -80,6 +80,7 @@ static mut IDT_PTR: IdtPointer = IdtPointer { limit: 0, base: 0 };
 extern "C" {
     fn isr_timer();
     fn isr_ne2000();
+    fn isr_mouse();
     fn isr_spurious();
 }
 
@@ -97,6 +98,9 @@ pub fn init() {
 
         // Set up NE2000 network card interrupt (IRQ10 -> interrupt 42)
         IDT[42] = IdtEntry::new(isr_ne2000 as *const () as u64, KERNEL_CS, 0);
+
+        // Set up PS/2 mouse interrupt (IRQ12 -> interrupt 44)
+        IDT[44] = IdtEntry::new(isr_mouse as *const () as u64, KERNEL_CS, 0);
 
         // Also handle spurious on IRQ15 (interrupt 47)
         IDT[47] = IdtEntry::new(isr_spurious as *const () as u64, KERNEL_CS, 0);

@@ -8,11 +8,14 @@ mod allocator;
 mod api;
 mod basic;
 mod context_switch;
+mod cursor;
 mod elf;
 mod executable;
+mod font;
 mod idt;
 mod interrupts;
 mod io;
+mod mouse;
 mod net;
 mod pic;
 mod program_alloc;
@@ -102,6 +105,16 @@ pub extern "C" fn kernel_main() -> ! {
     if net::ne2000::init() {
         pic::enable_irq(10);  // Enable NE2000 IRQ
         println!("IRQ10 enabled (NE2000)");
+    }
+
+    // Initialize mouse (only useful in VGA mode)
+    if vga::is_enabled() {
+        println!("\nInitializing mouse...");
+        if mouse::init() {
+            pic::enable_irq(12);  // Enable PS/2 mouse IRQ
+            println!("IRQ12 enabled (PS/2 mouse)");
+            cursor::init();  // Draw initial cursor
+        }
     }
 
     // Initialize executable subsystem
