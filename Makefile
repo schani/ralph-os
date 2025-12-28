@@ -24,7 +24,16 @@ NASM            = nasm
 OBJCOPY         = $(shell find ~/.rustup -name 'llvm-objcopy' 2>/dev/null | head -1)
 QEMU            = qemu-system-x86_64
 PYTHON          = python3
-CARGO          ?= cargo
+# Use rustup to run cargo with nightly toolchain
+# Set RUSTC explicitly to avoid Homebrew rustc in PATH taking precedence
+CARGO          ?= RUSTC="$$(rustup which --toolchain nightly rustc)" rustup run nightly cargo
+# macOS uses 'stat -f %z', Linux uses 'stat -c %s'
+UNAME_S         := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    STAT_SIZE   = stat -f %z
+else
+    STAT_SIZE   = stat -c %s
+endif
 
 # Kernel size limit (must match KERNEL_SECTORS in stage2.asm)
 # 450 sectors * 512 bytes = 230400 bytes (includes kernel + exec table + programs)
@@ -51,7 +60,7 @@ $(STAGE1): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
 $(STAGE2): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 	$(NASM) -f bin -o $@ $<
 	@# Verify size is exactly 8KB (NASM TIMES directive should ensure this)
-	@test $$(stat -c %s $@) -eq 8192 || (echo "ERROR: stage2 must be exactly 8KB"; exit 1)
+	@test $$($(STAT_SIZE) $@) -eq 8192 || (echo "ERROR: stage2 must be exactly 8KB"; exit 1)
 
 # Build bootloader (both stages)
 bootloader: $(STAGE1) $(STAGE2)
@@ -63,7 +72,7 @@ $(KERNEL): $(KERNEL_SRCS) Cargo.toml kernel.ld
 # Convert kernel ELF to flat binary
 $(KERNEL_BIN): $(KERNEL)
 	$(OBJCOPY) -O binary $< $@
-	@echo "Kernel size: $$(stat -c %s $@) bytes"
+	@echo "Kernel size: $$($(STAT_SIZE) $@) bytes"
 
 kernel: $(KERNEL_BIN)
 
@@ -72,7 +81,7 @@ $(BUILD_DIR)/programs/%.elf: $(PROGRAMS_DIR)/%/src/main.rs $(PROGRAMS_DIR)/%/Car
 	@echo "Building program: $*"
 	cd $(PROGRAMS_DIR)/$* && $(CARGO) build --release
 	cp $(PROGRAMS_DIR)/$*/target/x86_64-ralph_program/release/$* $@
-	@echo "Program $* size: $$(stat -c %s $@) bytes"
+	@echo "Program $* size: $$($(STAT_SIZE) $@) bytes"
 
 # Build all programs
 programs: $(PROGRAM_ELFS)
@@ -90,7 +99,7 @@ $(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(EXEC_TABLE)
 	# Append stage 2 (8KB = 16 sectors)
 	cat $(STAGE2) >> $@
 	# Pad to sector 17 (where kernel starts)
-	@CURRENT_SIZE=$$(stat -c %s $@); \
+	@CURRENT_SIZE=$$($(STAT_SIZE) $@); \
 	KERNEL_OFFSET=$$((17 * 512)); \
 	if [ $$CURRENT_SIZE -lt $$KERNEL_OFFSET ]; then \
 		dd if=/dev/zero bs=1 count=$$((KERNEL_OFFSET - CURRENT_SIZE)) >> $@ 2>/dev/null; \
@@ -98,7 +107,7 @@ $(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(EXEC_TABLE)
 	# Append kernel
 	cat $(KERNEL_BIN) >> $@
 	# Pad to 4-byte alignment (exec table search requires this)
-	@CURRENT_SIZE=$$(stat -c %s $@); \
+	@CURRENT_SIZE=$$($(STAT_SIZE) $@); \
 	PADDING=$$((4 - (CURRENT_SIZE % 4))); \
 	if [ $$PADDING -lt 4 ]; then \
 		dd if=/dev/zero bs=1 count=$$PADDING >> $@ 2>/dev/null; \
@@ -106,7 +115,7 @@ $(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(EXEC_TABLE)
 	# Append executable table (header + programs)
 	cat $(EXEC_TABLE) >> $@
 	# Check total size
-	@TOTAL_SIZE=$$(stat -c %s $@); \
+	@TOTAL_SIZE=$$($(STAT_SIZE) $@); \
 	KERNEL_START=$$((17 * 512)); \
 	CONTENT_SIZE=$$((TOTAL_SIZE - KERNEL_START)); \
 	if [ $$CONTENT_SIZE -gt $(MAX_KERNEL_SIZE) ]; then \
@@ -118,12 +127,12 @@ $(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(EXEC_TABLE)
 		echo "Kernel + programs size: $$CONTENT_SIZE bytes (limit: $(MAX_KERNEL_SIZE))"; \
 	fi
 	# Pad to 1.44MB floppy size (optional, good for compatibility)
-	@CURRENT_SIZE=$$(stat -c %s $@); \
+	@CURRENT_SIZE=$$($(STAT_SIZE) $@); \
 	FLOPPY_SIZE=$$((1474560)); \
 	if [ $$CURRENT_SIZE -lt $$FLOPPY_SIZE ]; then \
 		dd if=/dev/zero bs=1 count=$$((FLOPPY_SIZE - CURRENT_SIZE)) >> $@ 2>/dev/null; \
 	fi
-	@echo "Created $(OS_IMAGE) ($$(stat -c %s $@) bytes)"
+	@echo "Created $(OS_IMAGE) ($$($(STAT_SIZE) $@) bytes)"
 
 image: $(OS_IMAGE)
 
@@ -228,7 +237,7 @@ gdb: image
 
 # Clean build artifacts
 clean:
-	cargo clean
+	$(CARGO) clean
 	rm -f $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(OS_IMAGE) $(EXEC_TABLE)
 	rm -rf $(BUILD_DIR)/programs
 	for prog in $(PROGRAMS); do \
