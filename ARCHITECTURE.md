@@ -132,6 +132,16 @@ ralph_os/
 │   ├── api.rs            # Kernel API for loaded programs
 │   ├── executable.rs     # ELF loader and memory tracking
 │   ├── elf.rs            # ELF format parser
+│   ├── net/              # Network subsystem
+│   │   ├── mod.rs        # Network init and main task
+│   │   ├── ne2000.rs     # NE2000 NIC driver
+│   │   ├── packet.rs     # Pre-allocated buffer pool
+│   │   ├── ethernet.rs   # Ethernet frame handling
+│   │   ├── arp.rs        # ARP protocol
+│   │   ├── ipv4.rs       # IPv4 protocol
+│   │   ├── icmp.rs       # ICMP (ping)
+│   │   ├── tcp.rs        # TCP state machine
+│   │   └── checksum.rs   # Internet checksum
 │   └── basic/            # BASIC interpreter
 │       ├── mod.rs        # Module and tasks
 │       ├── lexer.rs      # Tokenizer
@@ -184,7 +194,9 @@ Vector  │ Source      │ Handler
 32      │ IRQ0/Timer  │ timer_handler
 33-38   │ IRQ1-6      │ (not yet implemented)
 39      │ IRQ7        │ spurious_handler
-40-46   │ IRQ8-14     │ (not yet implemented)
+40-41   │ IRQ8-9      │ (not yet implemented)
+42      │ IRQ10/NE2000│ ne2000_handler
+43-46   │ IRQ11-14    │ (not yet implemented)
 47      │ IRQ15       │ spurious_handler
 ```
 
@@ -229,6 +241,7 @@ This puts the CPU in a low-power state until the next timer interrupt.
 | 0xA0-0xA1   | PIC2 (Slave)        |
 | 0x60, 0x64  | PS/2 Keyboard ctrl  |
 | 0x92        | Fast A20 gate       |
+| 0x300-0x31F | NE2000 NIC (ISA)    |
 
 ### CPU Features Used
 
@@ -338,13 +351,16 @@ Programs receive a pointer to the KernelApi struct and a NULL-terminated argv ar
 type ProgramEntry = extern "C" fn(api: &'static KernelApi, argv: *const *const u8);
 
 pub struct KernelApi {
-    version: u32,                              // API version (currently 3)
+    version: u32,                              // API version (currently 4)
     print: extern "C" fn(*const u8, usize),    // Print string
     yield_now: extern "C" fn(),                // Yield to scheduler
     sleep_ms: extern "C" fn(u64),              // Sleep milliseconds
     exit: extern "C" fn() -> !,                // Exit program
     alloc: extern "C" fn(usize) -> *mut u8,    // Allocate (4KB aligned)
     free: extern "C" fn(*mut u8),              // Free (kernel tracks size)
+    // Network API (v4+) - see Network Subsystem section
+    net_socket, net_connect, net_status, net_send, net_recv,
+    net_available, net_close, net_listen, net_accept,
 }
 ```
 
@@ -383,3 +399,117 @@ Interactive BASIC REPL with line-numbered programs:
 ### Tasks
 - `memstats_task` - Periodic heap usage display
 - `repl_task` - Interactive interpreter
+
+## Network Subsystem
+
+### Architecture
+
+```
+┌─────────────────────────────────────┐
+│         User Programs               │
+│     (KernelApi socket functions)    │
+├─────────────────────────────────────┤
+│         Socket API (api.rs)         │
+├─────────────────────────────────────┤
+│    TCP    │    ICMP    │   (UDP)    │
+├───────────┴────────────┴────────────┤
+│              IPv4                   │
+├─────────────────────────────────────┤
+│              ARP                    │
+├─────────────────────────────────────┤
+│           Ethernet                  │
+├─────────────────────────────────────┤
+│        NE2000 Driver                │
+└─────────────────────────────────────┘
+```
+
+### Design Constraints
+
+**Allocator Not Interrupt-Safe**: The kernel heap allocator uses a spinlock that panics on contention. All packet buffers must be pre-allocated before enabling NIC interrupts.
+
+**Pre-allocated Packet Pool** (`src/net/packet.rs`):
+```
+RX buffers: 16 × 1536 bytes = ~24KB
+TX buffers: 8 × 1536 bytes = ~12KB
+Total: ~37KB static allocation
+```
+
+### NE2000 Driver (`src/net/ne2000.rs`)
+
+ISA-based NIC driver for QEMU's `ne2k_isa` device:
+- I/O base: 0x300
+- IRQ: 10 (vector 42)
+- 16KB on-card RAM with ring buffer for RX
+
+```bash
+# QEMU command
+qemu-system-x86_64 ... \
+  -netdev user,id=net0 \
+  -device ne2k_isa,netdev=net0,irq=10,iobase=0x300
+```
+
+### Network Task
+
+All protocol processing runs in `network_task()`:
+- Parses received packets from ring buffer
+- Dispatches to ARP, ICMP, or TCP handlers
+- Runs TCP timers for retransmission
+- Expires old ARP cache entries
+
+### TCP Implementation (`src/net/tcp.rs`)
+
+Full TCP state machine with:
+- All 11 TCP states (LISTEN, SYN_SENT, ESTABLISHED, etc.)
+- Three-way handshake
+- Graceful connection termination
+- Out-of-order segment buffering (4 segments max)
+- RTT estimation (Jacobson/Karels algorithm)
+- Congestion control (Reno-like slow start/AIMD)
+- Fast retransmit on 3 duplicate ACKs
+- Retransmission timeout with exponential backoff
+
+Configuration:
+```rust
+MAX_CONNECTIONS: 4
+RX_BUFFER_SIZE: 2KB per connection
+TX_BUFFER_SIZE: 2KB per connection
+```
+
+### Network API (v4+)
+
+Programs access networking via KernelApi:
+
+```rust
+// Socket operations (non-blocking)
+net_socket: fn() -> i32,                              // Create socket
+net_connect: fn(sock, ip, port) -> i32,               // Start connection
+net_listen: fn(sock, port) -> i32,                    // Listen on port
+net_accept: fn(sock) -> i32,                          // Accept connection
+net_status: fn(sock) -> i32,                          // 0=connecting, 1=connected, 2=closed
+net_send: fn(sock, data, len) -> i32,                 // Send data
+net_recv: fn(sock, buf, len) -> i32,                  // Receive data
+net_available: fn(sock) -> i32,                       // Bytes available
+net_close: fn(sock),                                  // Close socket
+```
+
+User program pattern (non-blocking with explicit yield):
+```c
+sock = api->net_socket();
+api->net_connect(sock, ip, 80);
+while (api->net_status(sock) == 0) {  // Connecting
+    api->yield_now();
+}
+if (api->net_status(sock) == 1) {  // Connected
+    api->net_send(sock, request, len);
+    // ...
+}
+```
+
+### Network Configuration
+
+Default (QEMU user networking):
+```
+IP: 10.0.2.15
+Netmask: 255.255.255.0
+Gateway: 10.0.2.2
+```

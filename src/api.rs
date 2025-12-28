@@ -6,9 +6,10 @@
 use crate::scheduler;
 use crate::task::TaskId;
 use crate::executable::{self, LoadedProgram};
+use crate::net::tcp;
 
 /// Kernel API version
-pub const API_VERSION: u32 = 3;
+pub const API_VERSION: u32 = 4;
 
 /// Kernel API structure passed to programs
 ///
@@ -30,6 +31,27 @@ pub struct KernelApi {
     pub alloc: extern "C" fn(usize) -> *mut u8,
     /// Free memory (kernel tracks size, verifies ownership)
     pub free: extern "C" fn(*mut u8),
+
+    // Network API (v4+)
+
+    /// Create a TCP socket, returns socket handle or -1 on error
+    pub net_socket: extern "C" fn() -> i32,
+    /// Start TCP connection (non-blocking), returns 0 on success, -1 on error
+    pub net_connect: extern "C" fn(sock: i32, ip: u32, port: u16) -> i32,
+    /// Get socket status: 0=connecting, 1=connected, 2=closed, -1=error
+    pub net_status: extern "C" fn(sock: i32) -> i32,
+    /// Send data (non-blocking), returns bytes sent, 0 if buffer full, -1 on error
+    pub net_send: extern "C" fn(sock: i32, data: *const u8, len: usize) -> i32,
+    /// Receive data (non-blocking), returns bytes read, 0 if no data, -1 on error/closed
+    pub net_recv: extern "C" fn(sock: i32, buf: *mut u8, len: usize) -> i32,
+    /// Get bytes available to read
+    pub net_available: extern "C" fn(sock: i32) -> i32,
+    /// Close socket (starts graceful close)
+    pub net_close: extern "C" fn(sock: i32),
+    /// Listen on port, returns 0 on success, -1 on error
+    pub net_listen: extern "C" fn(sock: i32, port: u16) -> i32,
+    /// Accept connection (non-blocking), returns new socket, 0 if none pending, -1 on error
+    pub net_accept: extern "C" fn(sock: i32) -> i32,
 }
 
 // API implementation functions
@@ -91,6 +113,94 @@ extern "C" fn api_free(ptr: *mut u8) {
     executable::task_free(task_id, ptr as usize);
 }
 
+// Network API implementation functions
+
+extern "C" fn api_net_socket() -> i32 {
+    match tcp::socket() {
+        Some(sock) => sock as i32,
+        None => -1,
+    }
+}
+
+extern "C" fn api_net_connect(sock: i32, ip: u32, port: u16) -> i32 {
+    if sock < 0 {
+        return -1;
+    }
+    // Convert IP from u32 to [u8; 4] (network byte order)
+    let ip_bytes = ip.to_be_bytes();
+    if tcp::connect(sock as usize, &ip_bytes, port) {
+        0
+    } else {
+        -1
+    }
+}
+
+extern "C" fn api_net_status(sock: i32) -> i32 {
+    if sock < 0 {
+        return -1;
+    }
+    let state = tcp::get_state(sock as usize);
+    match state {
+        tcp::TcpState::SynSent | tcp::TcpState::SynReceived => 0,  // Connecting
+        tcp::TcpState::Established => 1,  // Connected
+        tcp::TcpState::Closed => 2,  // Closed
+        tcp::TcpState::FinWait1 | tcp::TcpState::FinWait2 |
+        tcp::TcpState::CloseWait | tcp::TcpState::Closing |
+        tcp::TcpState::LastAck | tcp::TcpState::TimeWait => 2,  // Closing/Closed
+        tcp::TcpState::Listen => 0,  // Listening (not connected yet)
+    }
+}
+
+extern "C" fn api_net_send(sock: i32, data: *const u8, len: usize) -> i32 {
+    if sock < 0 || data.is_null() {
+        return -1;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(data, len) };
+    tcp::send(sock as usize, bytes) as i32
+}
+
+extern "C" fn api_net_recv(sock: i32, buf: *mut u8, len: usize) -> i32 {
+    if sock < 0 || buf.is_null() {
+        return -1;
+    }
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+    tcp::recv(sock as usize, buffer) as i32
+}
+
+extern "C" fn api_net_available(sock: i32) -> i32 {
+    if sock < 0 {
+        return 0;
+    }
+    tcp::available(sock as usize) as i32
+}
+
+extern "C" fn api_net_close(sock: i32) {
+    if sock >= 0 {
+        tcp::close(sock as usize);
+    }
+}
+
+extern "C" fn api_net_listen(sock: i32, port: u16) -> i32 {
+    if sock < 0 {
+        return -1;
+    }
+    if tcp::listen(sock as usize, port) {
+        0
+    } else {
+        -1
+    }
+}
+
+extern "C" fn api_net_accept(sock: i32) -> i32 {
+    if sock < 0 {
+        return -1;
+    }
+    match tcp::accept(sock as usize) {
+        Some(new_sock) => new_sock as i32,
+        None => 0,  // No pending connection
+    }
+}
+
 /// Global kernel API instance
 pub static KERNEL_API: KernelApi = KernelApi {
     version: API_VERSION,
@@ -100,6 +210,16 @@ pub static KERNEL_API: KernelApi = KernelApi {
     exit: api_exit,
     alloc: api_alloc,
     free: api_free,
+    // Network API
+    net_socket: api_net_socket,
+    net_connect: api_net_connect,
+    net_status: api_net_status,
+    net_send: api_net_send,
+    net_recv: api_net_recv,
+    net_available: api_net_available,
+    net_close: api_net_close,
+    net_listen: api_net_listen,
+    net_accept: api_net_accept,
 };
 
 /// Program entry point type
