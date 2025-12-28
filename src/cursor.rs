@@ -40,20 +40,16 @@ const TOOLTIP_WIDTH: usize = 152;   // 19 chars * 8 pixels
 const TOOLTIP_HEIGHT: usize = 20;   // 2 lines * 8 + 4 padding
 const TOOLTIP_PADDING: usize = 2;
 
-/// Saved pixels under cursor (cursor area only)
-static mut SAVED_CURSOR: [[u8; CURSOR_WIDTH]; CURSOR_HEIGHT] = [[0; CURSOR_WIDTH]; CURSOR_HEIGHT];
+/// Combined save area - large enough for cursor + tooltip + gap
+const SAVE_WIDTH: usize = 180;
+const SAVE_HEIGHT: usize = 50;
 
-/// Saved pixels under tooltip (need larger buffer)
-static mut SAVED_TOOLTIP: [[u8; TOOLTIP_WIDTH]; TOOLTIP_HEIGHT] = [[0; TOOLTIP_WIDTH]; TOOLTIP_HEIGHT];
+/// Saved pixels (single combined area to avoid overlap issues)
+static mut SAVED_PIXELS: [[u8; SAVE_WIDTH]; SAVE_HEIGHT] = [[0; SAVE_WIDTH]; SAVE_HEIGHT];
 
-/// Last cursor position (for erasing)
-static LAST_CURSOR_X: AtomicI16 = AtomicI16::new(-100);  // Off-screen initially
-static LAST_CURSOR_Y: AtomicI16 = AtomicI16::new(-100);
-
-/// Last tooltip position
-static LAST_TOOLTIP_X: AtomicI16 = AtomicI16::new(-100);
-static LAST_TOOLTIP_Y: AtomicI16 = AtomicI16::new(-100);
-static TOOLTIP_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Last saved area position
+static LAST_SAVE_X: AtomicI16 = AtomicI16::new(-1000);
+static LAST_SAVE_Y: AtomicI16 = AtomicI16::new(-1000);
 
 /// Memory region boundaries (must match memvis.rs)
 const VIS_BASE: usize = 0x100000;
@@ -74,59 +70,34 @@ fn read_pixel(x: usize, y: usize) -> u8 {
     }
 }
 
-/// Save pixels under cursor area
-fn save_cursor_pixels(x: i16, y: i16) {
-    let bx = x as usize;
-    let by = y as usize;
-    for row in 0..CURSOR_HEIGHT {
-        for col in 0..CURSOR_WIDTH {
+/// Save pixels under combined cursor+tooltip area
+fn save_area(x: i16, y: i16) {
+    for row in 0..SAVE_HEIGHT {
+        for col in 0..SAVE_WIDTH {
+            let px = x as isize + col as isize;
+            let py = y as isize + row as isize;
             unsafe {
-                SAVED_CURSOR[row][col] = read_pixel(bx + col, by + row);
+                if px >= 0 && py >= 0 {
+                    SAVED_PIXELS[row][col] = read_pixel(px as usize, py as usize);
+                }
             }
         }
     }
 }
 
-/// Restore saved cursor pixels
-fn restore_cursor_pixels(x: i16, y: i16) {
-    if x < 0 || y < 0 {
-        return;
+/// Restore saved pixels
+fn restore_area(x: i16, y: i16) {
+    if x < -500 {
+        return; // Never saved
     }
-    let bx = x as usize;
-    let by = y as usize;
-    for row in 0..CURSOR_HEIGHT {
-        for col in 0..CURSOR_WIDTH {
-            unsafe {
-                vga::set_pixel(bx + col, by + row, SAVED_CURSOR[row][col]);
-            }
-        }
-    }
-}
-
-/// Save pixels under tooltip area
-fn save_tooltip_pixels(x: i16, y: i16) {
-    let bx = x as usize;
-    let by = y as usize;
-    for row in 0..TOOLTIP_HEIGHT {
-        for col in 0..TOOLTIP_WIDTH {
-            unsafe {
-                SAVED_TOOLTIP[row][col] = read_pixel(bx + col, by + row);
-            }
-        }
-    }
-}
-
-/// Restore saved tooltip pixels
-fn restore_tooltip_pixels(x: i16, y: i16) {
-    if x < 0 || y < 0 {
-        return;
-    }
-    let bx = x as usize;
-    let by = y as usize;
-    for row in 0..TOOLTIP_HEIGHT {
-        for col in 0..TOOLTIP_WIDTH {
-            unsafe {
-                vga::set_pixel(bx + col, by + row, SAVED_TOOLTIP[row][col]);
+    for row in 0..SAVE_HEIGHT {
+        for col in 0..SAVE_WIDTH {
+            let px = x as isize + col as isize;
+            let py = y as isize + row as isize;
+            if px >= 0 && py >= 0 && (px as usize) < vga::WIDTH && (py as usize) < vga::HEIGHT {
+                unsafe {
+                    vga::set_pixel(px as usize, py as usize, SAVED_PIXELS[row][col]);
+                }
             }
         }
     }
@@ -249,43 +220,27 @@ pub fn update() {
 
     // Get new position
     let (new_x, new_y) = mouse::position();
-    let old_x = LAST_CURSOR_X.load(Ordering::Relaxed);
-    let old_y = LAST_CURSOR_Y.load(Ordering::Relaxed);
+    let old_x = LAST_SAVE_X.load(Ordering::Relaxed);
+    let old_y = LAST_SAVE_Y.load(Ordering::Relaxed);
 
-    // Erase old tooltip first (it's on top of everything)
-    if TOOLTIP_VISIBLE.load(Ordering::Relaxed) {
-        let tooltip_x = LAST_TOOLTIP_X.load(Ordering::Relaxed);
-        let tooltip_y = LAST_TOOLTIP_Y.load(Ordering::Relaxed);
-        restore_tooltip_pixels(tooltip_x, tooltip_y);
-        TOOLTIP_VISIBLE.store(false, Ordering::Relaxed);
-    }
+    // Restore old area
+    restore_area(old_x, old_y);
 
-    // Erase old cursor
-    restore_cursor_pixels(old_x, old_y);
-
-    // Save pixels under new cursor position
-    save_cursor_pixels(new_x, new_y);
-
-    // Calculate new tooltip position
-    let (tooltip_x, tooltip_y) = calculate_tooltip_pos(new_x, new_y);
-
-    // Save pixels under new tooltip position
-    save_tooltip_pixels(tooltip_x, tooltip_y);
+    // Save pixels under new position
+    save_area(new_x, new_y);
 
     // Draw cursor
     draw_cursor_sprite(new_x, new_y);
 
-    // Draw tooltip
+    // Calculate and draw tooltip
+    let (tooltip_x, tooltip_y) = calculate_tooltip_pos(new_x, new_y);
     let addr = pixel_to_addr(new_x, new_y);
     let (region, allocated) = get_region_info(addr);
     draw_tooltip(tooltip_x, tooltip_y, addr, region, allocated);
 
     // Update state
-    LAST_CURSOR_X.store(new_x, Ordering::Relaxed);
-    LAST_CURSOR_Y.store(new_y, Ordering::Relaxed);
-    LAST_TOOLTIP_X.store(tooltip_x, Ordering::Relaxed);
-    LAST_TOOLTIP_Y.store(tooltip_y, Ordering::Relaxed);
-    TOOLTIP_VISIBLE.store(true, Ordering::Relaxed);
+    LAST_SAVE_X.store(new_x, Ordering::Relaxed);
+    LAST_SAVE_Y.store(new_y, Ordering::Relaxed);
 
     mouse::clear_dirty();
 }
@@ -297,21 +252,22 @@ pub fn init() {
     }
 
     let (x, y) = mouse::position();
-    save_cursor_pixels(x, y);
+
+    // Save pixels under cursor area
+    save_area(x, y);
+
+    // Draw cursor
     draw_cursor_sprite(x, y);
 
+    // Draw tooltip
     let (tooltip_x, tooltip_y) = calculate_tooltip_pos(x, y);
-    save_tooltip_pixels(tooltip_x, tooltip_y);
-
     let addr = pixel_to_addr(x, y);
     let (region, allocated) = get_region_info(addr);
     draw_tooltip(tooltip_x, tooltip_y, addr, region, allocated);
 
-    LAST_CURSOR_X.store(x, Ordering::Relaxed);
-    LAST_CURSOR_Y.store(y, Ordering::Relaxed);
-    LAST_TOOLTIP_X.store(tooltip_x, Ordering::Relaxed);
-    LAST_TOOLTIP_Y.store(tooltip_y, Ordering::Relaxed);
-    TOOLTIP_VISIBLE.store(true, Ordering::Relaxed);
+    // Store position
+    LAST_SAVE_X.store(x, Ordering::Relaxed);
+    LAST_SAVE_Y.store(y, Ordering::Relaxed);
 
     mouse::clear_dirty();
 }
