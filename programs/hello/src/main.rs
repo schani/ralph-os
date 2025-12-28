@@ -29,21 +29,36 @@ fn print(api: &KernelApi, s: &str) {
 
 /// Program entry point
 ///
-/// This function is called by the kernel with a pointer to the kernel API.
+/// This function is called by the kernel with a pointer to the kernel API
+/// and a NULL-terminated array of argument strings.
 #[no_mangle]
-pub extern "C" fn _start(api: &'static KernelApi) -> ! {
+pub extern "C" fn _start(api: &'static KernelApi, argv: *const *const u8) -> ! {
     print(api, "Hello from a dynamically loaded program!\n");
-    print(api, "API version: ");
 
-    // Print version number (simple decimal conversion)
-    let version = api.version;
-    if version < 10 {
-        let digit = b'0' + version as u8;
-        let s = [digit];
-        (api.print)(s.as_ptr(), 1);
-    } else {
-        print(api, "??");
+    // Print arguments
+    print(api, "Arguments:\n");
+    let mut i = 0;
+    unsafe {
+        while !(*argv.add(i)).is_null() {
+            print(api, "  argv[");
+            print_digit(api, i);
+            print(api, "] = \"");
+
+            // Print the null-terminated string
+            let mut ptr = *argv.add(i);
+            while *ptr != 0 {
+                let s = core::slice::from_raw_parts(ptr, 1);
+                (api.print)(s.as_ptr(), 1);
+                ptr = ptr.add(1);
+            }
+
+            print(api, "\"\n");
+            i += 1;
+        }
     }
+
+    print(api, "API version: ");
+    print_digit(api, api.version as usize);
     print(api, "\n");
 
     // Demonstrate yielding
@@ -58,6 +73,17 @@ pub extern "C" fn _start(api: &'static KernelApi) -> ! {
 
     // Exit cleanly
     (api.exit)()
+}
+
+/// Print a single digit (0-9)
+fn print_digit(api: &KernelApi, n: usize) {
+    if n < 10 {
+        let digit = b'0' + n as u8;
+        let s = [digit];
+        (api.print)(s.as_ptr(), 1);
+    } else {
+        print(api, "??");
+    }
 }
 
 /// Panic handler - required for no_std

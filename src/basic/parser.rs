@@ -78,8 +78,8 @@ pub enum Statement {
     Rem,
     /// END
     End,
-    /// SPAWN "program_name"
-    Spawn(String),
+    /// SPAWN "program_name" [, "arg1", "arg2", ...]
+    Spawn(String, Vec<String>),
 }
 
 /// Parse error
@@ -324,7 +324,20 @@ impl<'a> Parser<'a> {
         };
         self.advance();
 
-        Ok(Statement::Spawn(name))
+        // Parse optional comma-separated string arguments
+        let mut args = Vec::new();
+        while self.current == Token::Comma {
+            self.advance(); // consume comma
+
+            let arg = match &self.current {
+                Token::StringLit(s) => s.clone(),
+                _ => return Err(ParseError("SPAWN arguments must be strings".into())),
+            };
+            self.advance();
+            args.push(arg);
+        }
+
+        Ok(Statement::Spawn(name, args))
     }
 
     /// Parse expression with operator precedence

@@ -361,8 +361,10 @@ fn execute_statement(
 
         Statement::End => Ok(NextAction::End),
 
-        Statement::Spawn(name) => {
-            match api::spawn_program_dynamic(name) {
+        Statement::Spawn(name, args) => {
+            // Convert Vec<String> to Vec<&str> for the API
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            match api::spawn_program_dynamic(name, &arg_refs) {
                 Ok(task_id) => {
                     crate::println!("Spawned '{}' as task {}", name, task_id);
                     Ok(NextAction::Continue)
@@ -470,7 +472,13 @@ fn format_statement(stmt: &Statement) -> String {
         Statement::Sleep(expr) => alloc::format!("SLEEP {}", format_expr(expr)),
         Statement::Rem => String::from("REM"),
         Statement::End => String::from("END"),
-        Statement::Spawn(name) => alloc::format!("SPAWN \"{}\"", name),
+        Statement::Spawn(name, args) => {
+            let mut s = alloc::format!("SPAWN \"{}\"", name);
+            for arg in args {
+                s.push_str(&alloc::format!(", \"{}\"", arg));
+            }
+            s
+        }
     }
 }
 

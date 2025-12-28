@@ -8,7 +8,7 @@ use crate::task::TaskId;
 use crate::executable::{self, LoadedProgram};
 
 /// Kernel API version
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;
 
 /// Kernel API structure passed to programs
 ///
@@ -106,22 +106,25 @@ pub static KERNEL_API: KernelApi = KernelApi {
 ///
 /// Programs must have an entry point with this signature.
 /// The KernelApi pointer is valid for the lifetime of the program.
-pub type ProgramEntry = extern "C" fn(api: &'static KernelApi);
+/// argv is a NULL-terminated array of pointers to null-terminated strings.
+pub type ProgramEntry = extern "C" fn(api: &'static KernelApi, argv: *const *const u8);
 
-/// Wrapper function that calls the program with the API pointer
+/// Wrapper function that calls the program with the API pointer and argv
 ///
 /// This is what gets registered as the task entry point.
-/// It sets up the API pointer and calls the actual program.
+/// It sets up the API pointer and argv, then calls the actual program.
 fn program_wrapper(entry: usize) {
     let entry_fn: ProgramEntry = unsafe { core::mem::transmute(entry) };
-    entry_fn(&KERNEL_API);
+    let argv = get_pending_argv();
+    entry_fn(&KERNEL_API, argv);
 }
 
-/// Spawn a program as a task
+/// Spawn a program as a task with arguments
 ///
 /// Loads the named executable and spawns it as a new task.
+/// The program name becomes argv[0], extra_args become argv[1..].
 /// Returns the task ID on success.
-pub fn spawn_program(name: &'static str) -> Result<TaskId, executable::ExecError> {
+pub fn spawn_program(name: &'static str, extra_args: &[&str]) -> Result<TaskId, executable::ExecError> {
     // Load the program
     let program = executable::load(name)?;
 
@@ -132,13 +135,19 @@ pub fn spawn_program(name: &'static str) -> Result<TaskId, executable::ExecError
     // Register program memory for cleanup
     executable::register_task_program(task_id, program.base_addr, program.size);
 
+    // Allocate and set up argv in the task's memory
+    let argv = allocate_args_for_task(task_id, name, extra_args)
+        .ok_or(executable::ExecError::AllocationFailed)?;
+    set_pending_argv(argv);
+
     Ok(task_id)
 }
 
-/// Spawn a program by name (for dynamic names like from BASIC)
+/// Spawn a program by name with arguments (for dynamic names like from BASIC)
 ///
 /// This version takes a regular &str and uses "program" as the task name.
-pub fn spawn_program_dynamic(name: &str) -> Result<TaskId, executable::ExecError> {
+/// The program name becomes argv[0], extra_args become argv[1..].
+pub fn spawn_program_dynamic(name: &str, extra_args: &[&str]) -> Result<TaskId, executable::ExecError> {
     // Load the program
     let program = executable::load(name)?;
 
@@ -148,6 +157,11 @@ pub fn spawn_program_dynamic(name: &str) -> Result<TaskId, executable::ExecError
 
     // Register program memory for cleanup
     executable::register_task_program(task_id, program.base_addr, program.size);
+
+    // Allocate and set up argv in the task's memory
+    let argv = allocate_args_for_task(task_id, name, extra_args)
+        .ok_or(executable::ExecError::AllocationFailed)?;
+    set_pending_argv(argv);
 
     Ok(task_id)
 }
@@ -165,8 +179,9 @@ fn spawn_program_task(name: &'static str, program: &LoadedProgram) -> Option<Tas
     scheduler::spawn(name, pending_program_entry)
 }
 
-// Pending entry point storage
+// Pending entry point and argv storage
 static mut PENDING_ENTRY: usize = 0;
+static mut PENDING_ARGV: *const *const u8 = core::ptr::null();
 
 fn set_pending_entry(entry: usize) {
     unsafe { PENDING_ENTRY = entry; }
@@ -174,6 +189,59 @@ fn set_pending_entry(entry: usize) {
 
 fn get_pending_entry() -> usize {
     unsafe { PENDING_ENTRY }
+}
+
+fn set_pending_argv(argv: *const *const u8) {
+    unsafe { PENDING_ARGV = argv; }
+}
+
+fn get_pending_argv() -> *const *const u8 {
+    unsafe { PENDING_ARGV }
+}
+
+/// Allocate argv array and strings in the task's memory
+///
+/// Creates a NULL-terminated argv array where argv[0] is the program name.
+/// All memory is allocated in the task's program region for auto-cleanup.
+fn allocate_args_for_task(
+    task_id: TaskId,
+    program_name: &str,
+    extra_args: &[&str],
+) -> Option<*const *const u8> {
+    let total_args = 1 + extra_args.len(); // program_name + extra_args
+    let ptr_size = core::mem::size_of::<*const u8>();
+    let argv_size = (total_args + 1) * ptr_size; // +1 for NULL terminator
+
+    let strings_size = program_name.len() + 1
+        + extra_args.iter().map(|s| s.len() + 1).sum::<usize>();
+    let total_size = argv_size + strings_size;
+
+    let base = executable::task_alloc(task_id, total_size)?;
+
+    // Layout: [argv pointers...][NULL][string data...]
+    let argv_base = base as *mut *const u8;
+    let mut strings_ptr = (base + argv_size) as *mut u8;
+
+    unsafe {
+        // Copy program name as argv[0]
+        core::ptr::copy_nonoverlapping(program_name.as_ptr(), strings_ptr, program_name.len());
+        *strings_ptr.add(program_name.len()) = 0;
+        *argv_base = strings_ptr as *const u8;
+        strings_ptr = strings_ptr.add(program_name.len() + 1);
+
+        // Copy extra args as argv[1..]
+        for (i, arg) in extra_args.iter().enumerate() {
+            core::ptr::copy_nonoverlapping(arg.as_ptr(), strings_ptr, arg.len());
+            *strings_ptr.add(arg.len()) = 0;
+            *argv_base.add(i + 1) = strings_ptr as *const u8;
+            strings_ptr = strings_ptr.add(arg.len() + 1);
+        }
+
+        // NULL terminate argv array
+        *argv_base.add(total_args) = core::ptr::null();
+    }
+
+    Some(argv_base as *const *const u8)
 }
 
 /// Entry point for pending program (reads from PENDING_ENTRY)
