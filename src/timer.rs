@@ -4,7 +4,7 @@
 //! Uses interrupt-driven tick counting for accurate timekeeping.
 
 use crate::io::outb;
-use crate::{cursor, vga};
+use crate::{cursor, mouse, vga};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 // PIT I/O ports
@@ -46,8 +46,10 @@ pub fn init() {
 pub fn tick() {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    // Update mouse cursor if VGA mode is active
+    // Poll for mouse data and update cursor if VGA mode is active
     if vga::is_enabled() {
+        // Poll mouse since IRQ12 may not be working in QEMU
+        mouse::poll();
         cursor::update();
     }
 }

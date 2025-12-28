@@ -169,6 +169,7 @@ run-vga-mouse: image
 		-serial stdio \
 		-display gtk \
 		-device VGA \
+		-machine pc,i8042=on \
 		-no-reboot
 
 # Test VGA visualization with automated screenshot

@@ -157,6 +157,18 @@ pub fn is_initialized() -> bool {
     MOUSE_INITIALIZED.load(Ordering::Acquire)
 }
 
+/// Poll for mouse data (call from timer or main loop)
+/// Returns true if data was processed
+pub fn poll() -> bool {
+    let status = unsafe { inb(PS2_STATUS) };
+    // Check if output buffer full AND aux data flag set
+    if status & 0x21 == 0x21 {
+        handle_interrupt();
+        return true;
+    }
+    false
+}
+
 /// Handle mouse interrupt (called from IRQ12 handler)
 pub fn handle_interrupt() {
     // Check if data is from mouse (bit 5 of status = aux data)
