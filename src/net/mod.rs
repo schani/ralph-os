@@ -8,7 +8,9 @@
 //! - IRQ handler only copies packets to pre-allocated ring buffer
 //! - User programs use non-blocking socket API
 
+pub mod arp;
 pub mod checksum;
+pub mod ethernet;
 pub mod ne2000;
 pub mod packet;
 
@@ -65,7 +67,9 @@ pub fn network_task() {
         }
 
         // TODO: Process TCP timers
-        // TODO: Process ARP cache expiry
+
+        // Process ARP cache expiry
+        arp::expire_old_entries();
 
         // Sleep for 10ms (100 Hz polling)
         crate::scheduler::sleep_ms(10);
@@ -74,11 +78,30 @@ pub fn network_task() {
 
 /// Process a received packet
 fn process_rx_packet(data: &[u8], len: usize) {
-    if len < 14 {
-        return; // Too short for Ethernet header
+    // Parse Ethernet header
+    let Some(eth_header) = ethernet::EthernetHeader::parse(&data[..len]) else {
+        return;
+    };
+
+    // Check if frame is for us
+    if !eth_header.is_for_us() {
+        return;
     }
 
-    // TODO: Parse Ethernet header and dispatch
-    // For now, just log that we received something
-    println!("[net] Received {} bytes", len);
+    // Get payload
+    let payload = ethernet::EthernetHeader::payload(&data[..len]);
+
+    // Dispatch based on EtherType
+    match eth_header.ethertype {
+        ethernet::ETHERTYPE_ARP => {
+            arp::process_packet(payload);
+        }
+        ethernet::ETHERTYPE_IPV4 => {
+            // TODO: Process IPv4 packet
+            println!("[net] IPv4 packet ({} bytes)", payload.len());
+        }
+        _ => {
+            // Unknown protocol, ignore
+        }
+    }
 }
