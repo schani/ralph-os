@@ -131,8 +131,11 @@ pub fn init() -> bool {
 
     drain_output_buffer();
 
-    // Send mouse enable command directly (skip config read/write)
-    // This is a simpler init that works on more systems
+    // Get and modify compaq status byte to enable IRQ12
+    // Command 0x20 reads, 0x60 writes the "command byte"
+    // But that hangs, so we use command 0xD4 to talk to mouse directly
+
+    // Just send mouse commands - QEMU should have IRQ12 enabled by default
     if !send_mouse_command(MOUSE_SET_DEFAULTS) {
         crate::println!("[mouse] Failed to set defaults");
         return false;
