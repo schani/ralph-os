@@ -1,9 +1,9 @@
 //! Mouse Cursor and Tooltip
 //!
 //! Handles cursor sprite rendering and memory info tooltip display.
-//! Simply redraws the entire screen on each update - no save/restore needed.
+//! Queries actual allocator data structures to show real allocation boundaries.
 
-use crate::{vga, font, mouse, memvis};
+use crate::{vga, font, mouse, memvis, allocator, program_alloc};
 use crate::vga::colors;
 
 /// Cursor sprite size
@@ -82,67 +82,94 @@ fn pixel_to_addr(x: i16, y: i16) -> usize {
     VIS_BASE + (pixel_index << 8)  // * 256 bytes per pixel
 }
 
-/// Convert pixel index to memory address
-fn pixel_index_to_addr(index: usize) -> usize {
-    VIS_BASE + (index * BYTES_PER_PIXEL)
+/// Memory region info returned by find_memory_region
+struct MemoryRegionInfo {
+    start: usize,
+    end: usize,
+    region_name: &'static str,
+    is_allocated: bool,
 }
 
-/// Find the contiguous region of the same color that contains the cursor position.
-/// Returns (start_addr, end_addr) of the region.
-fn find_contiguous_region(x: i16, y: i16) -> (usize, usize) {
-    let cursor_index = (y as usize) * vga::WIDTH + (x as usize);
-    let cursor_color = memvis::get_pixel(x as usize, y as usize);
-    let max_pixels = vga::WIDTH * vga::HEIGHT;
-
-    // Scan backward to find start of region
-    let mut start_index = cursor_index;
-    while start_index > 0 {
-        let prev_index = start_index - 1;
-        let prev_y = prev_index / vga::WIDTH;
-        let prev_x = prev_index % vga::WIDTH;
-        let prev_color = memvis::get_pixel(prev_x, prev_y);
-        if prev_color != cursor_color {
-            break;
-        }
-        start_index = prev_index;
-    }
-
-    // Scan forward to find end of region
-    let mut end_index = cursor_index;
-    while end_index + 1 < max_pixels {
-        let next_index = end_index + 1;
-        let next_y = next_index / vga::WIDTH;
-        let next_x = next_index % vga::WIDTH;
-        let next_color = memvis::get_pixel(next_x, next_y);
-        if next_color != cursor_color {
-            break;
-        }
-        end_index = next_index;
-    }
-
-    let start_addr = pixel_index_to_addr(start_index);
-    let end_addr = pixel_index_to_addr(end_index) + BYTES_PER_PIXEL - 1;
-
-    (start_addr, end_addr)
-}
-
-/// Get region name and allocation state for an address
-fn get_region_info(addr: usize, x: i16, y: i16) -> (&'static str, bool) {
-    // Read the pixel color from shadow buffer (not VGA, which may have cursor overlay)
-    let pixel_color = memvis::get_pixel(x as usize, y as usize);
-
+/// Find the memory region that contains the given address.
+/// Queries actual allocator data structures, not pixels.
+fn find_memory_region(addr: usize) -> MemoryRegionInfo {
+    // Kernel region: 0x100000 - 0x200000 (always "allocated")
     if addr < KERNEL_END {
-        ("Kernel", true)  // Kernel is always "allocated"
-    } else if addr < HEAP_END {
-        let allocated = pixel_color == colors::RED;
-        ("Heap", allocated)
-    } else if addr < PROGRAM_END {
-        let allocated = pixel_color == colors::MAGENTA;
-        ("Program", allocated)
-    } else {
-        ("Unknown", false)
+        return MemoryRegionInfo {
+            start: VIS_BASE,
+            end: KERNEL_END,
+            region_name: "Kernel",
+            is_allocated: true,
+        };
+    }
+
+    // Heap region: 0x200000 - 0x400000
+    if addr < HEAP_END {
+        // Check if it's an allocation
+        if let Some((start, end)) = allocator::find_allocation(addr) {
+            return MemoryRegionInfo {
+                start,
+                end,
+                region_name: "Heap",
+                is_allocated: true,
+            };
+        }
+        // Check if it's a free region
+        if let Some((start, end)) = allocator::find_free_region(addr) {
+            return MemoryRegionInfo {
+                start,
+                end,
+                region_name: "Heap",
+                is_allocated: false,
+            };
+        }
+        // Fallback (shouldn't happen)
+        return MemoryRegionInfo {
+            start: KERNEL_END,
+            end: HEAP_END,
+            region_name: "Heap",
+            is_allocated: false,
+        };
+    }
+
+    // Program region: 0x400000 - 0x1000000
+    if addr < PROGRAM_END {
+        // Check if it's an allocation
+        if let Some((start, end)) = program_alloc::find_allocation(addr) {
+            return MemoryRegionInfo {
+                start,
+                end,
+                region_name: "Program",
+                is_allocated: true,
+            };
+        }
+        // Check if it's a free region
+        if let Some((start, end)) = program_alloc::find_free_region(addr) {
+            return MemoryRegionInfo {
+                start,
+                end,
+                region_name: "Program",
+                is_allocated: false,
+            };
+        }
+        // Fallback (shouldn't happen)
+        return MemoryRegionInfo {
+            start: HEAP_END,
+            end: PROGRAM_END,
+            region_name: "Program",
+            is_allocated: false,
+        };
+    }
+
+    // Beyond visualized region
+    MemoryRegionInfo {
+        start: addr,
+        end: addr + BYTES_PER_PIXEL,
+        region_name: "Unknown",
+        is_allocated: false,
     }
 }
+
 
 /// Calculate tooltip position (flip if near edge)
 fn calculate_tooltip_pos(cursor_x: i16, cursor_y: i16) -> (i16, i16) {
@@ -217,10 +244,9 @@ pub fn update() {
     // Get cursor position
     let (x, y) = mouse::position();
 
-    // Get memory info BEFORE redrawing (so we read the correct pixel color)
+    // Get memory info by querying the actual allocators
     let addr = pixel_to_addr(x, y);
-    let (region, allocated) = get_region_info(addr, x, y);
-    let (start_addr, end_addr) = find_contiguous_region(x, y);
+    let region_info = find_memory_region(addr);
 
     // Redraw the entire memory visualization
     memvis::redraw();
@@ -230,7 +256,14 @@ pub fn update() {
 
     // Draw tooltip on top
     let (tooltip_x, tooltip_y) = calculate_tooltip_pos(x, y);
-    draw_tooltip(tooltip_x, tooltip_y, start_addr, end_addr, region, allocated);
+    draw_tooltip(
+        tooltip_x,
+        tooltip_y,
+        region_info.start,
+        region_info.end,
+        region_info.region_name,
+        region_info.is_allocated,
+    );
 
     mouse::clear_dirty();
 }
@@ -243,17 +276,23 @@ pub fn init() {
 
     let (x, y) = mouse::position();
 
-    // Get memory info
+    // Get memory info by querying the actual allocators
     let addr = pixel_to_addr(x, y);
-    let (region, allocated) = get_region_info(addr, x, y);
-    let (start_addr, end_addr) = find_contiguous_region(x, y);
+    let region_info = find_memory_region(addr);
 
     // Draw cursor
     draw_cursor_sprite(x, y);
 
     // Draw tooltip
     let (tooltip_x, tooltip_y) = calculate_tooltip_pos(x, y);
-    draw_tooltip(tooltip_x, tooltip_y, start_addr, end_addr, region, allocated);
+    draw_tooltip(
+        tooltip_x,
+        tooltip_y,
+        region_info.start,
+        region_info.end,
+        region_info.region_name,
+        region_info.is_allocated,
+    );
 
     mouse::clear_dirty();
 }

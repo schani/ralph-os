@@ -283,3 +283,80 @@ pub unsafe fn deallocate(addr: usize, size: usize) {
 pub fn stats() -> (usize, usize) {
     PROGRAM_ALLOCATOR.lock().stats()
 }
+
+/// Find the allocation that contains the given address
+///
+/// Returns Some((start, end)) if the address is in an allocated region,
+/// or None if the address is in a free region or outside the program area.
+pub fn find_allocation(addr: usize) -> Option<(usize, usize)> {
+    // Check if address is even in the program region
+    if addr < PROGRAM_REGION_START || addr >= PROGRAM_REGION_END {
+        return None;
+    }
+
+    let allocator = PROGRAM_ALLOCATOR.lock();
+
+    // Walk the free list to find allocated gaps
+    // Allocations are the spaces BETWEEN free regions
+    let mut prev_end = PROGRAM_REGION_START;
+    let mut current = allocator.head;
+
+    while let Some(region_ptr) = current {
+        let region = unsafe { region_ptr.as_ref() };
+        let region_start = region_ptr.as_ptr() as usize;
+        let region_end = region_start + region.size;
+
+        // There's an allocation from prev_end to region_start
+        if prev_end < region_start {
+            if addr >= prev_end && addr < region_start {
+                // Found it - address is in this allocated region
+                return Some((prev_end, region_start));
+            }
+        }
+
+        // Check if address is in this free region
+        if addr >= region_start && addr < region_end {
+            // Address is in a free region
+            return None;
+        }
+
+        prev_end = region_end;
+        current = region.next;
+    }
+
+    // Check for allocation after the last free region
+    if prev_end < PROGRAM_REGION_END && addr >= prev_end && addr < PROGRAM_REGION_END {
+        return Some((prev_end, PROGRAM_REGION_END));
+    }
+
+    None
+}
+
+/// Find the free region that contains the given address
+///
+/// Returns Some((start, end)) if the address is in a free region,
+/// or None if the address is allocated or outside the program area.
+pub fn find_free_region(addr: usize) -> Option<(usize, usize)> {
+    // Check if address is even in the program region
+    if addr < PROGRAM_REGION_START || addr >= PROGRAM_REGION_END {
+        return None;
+    }
+
+    let allocator = PROGRAM_ALLOCATOR.lock();
+
+    let mut current = allocator.head;
+
+    while let Some(region_ptr) = current {
+        let region = unsafe { region_ptr.as_ref() };
+        let region_start = region_ptr.as_ptr() as usize;
+        let region_end = region_start + region.size;
+
+        if addr >= region_start && addr < region_end {
+            return Some((region_start, region_end));
+        }
+
+        current = region.next;
+    }
+
+    None
+}

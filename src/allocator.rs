@@ -335,3 +335,80 @@ pub fn get_heap_stats() -> (usize, usize) {
 
     (used, free)
 }
+
+/// Find the allocation that contains the given address
+///
+/// Returns Some((start, end)) if the address is in an allocated region,
+/// or None if the address is in a free region or outside the heap.
+pub fn find_allocation(addr: usize) -> Option<(usize, usize)> {
+    let allocator = ALLOCATOR.inner.lock();
+
+    // Check if address is even in the heap
+    if addr < allocator.heap_start || addr >= allocator.heap_end {
+        return None;
+    }
+
+    // Walk the free list to find allocated gaps
+    // Allocations are the spaces BETWEEN free blocks
+    let mut prev_end = allocator.heap_start;
+    let mut current = allocator.head;
+
+    while let Some(block_ptr) = current {
+        let block = unsafe { block_ptr.as_ref() };
+        let block_start = block_ptr.as_ptr() as usize;
+        let block_end = block_start + block.size;
+
+        // There's an allocation from prev_end to block_start
+        if prev_end < block_start {
+            if addr >= prev_end && addr < block_start {
+                // Found it - address is in this allocated region
+                return Some((prev_end, block_start));
+            }
+        }
+
+        // Check if address is in this free block
+        if addr >= block_start && addr < block_end {
+            // Address is in a free region
+            return None;
+        }
+
+        prev_end = block_end;
+        current = block.next;
+    }
+
+    // Check for allocation after the last free block
+    if prev_end < allocator.heap_end && addr >= prev_end && addr < allocator.heap_end {
+        return Some((prev_end, allocator.heap_end));
+    }
+
+    None
+}
+
+/// Find the free region that contains the given address
+///
+/// Returns Some((start, end)) if the address is in a free region,
+/// or None if the address is allocated or outside the heap.
+pub fn find_free_region(addr: usize) -> Option<(usize, usize)> {
+    let allocator = ALLOCATOR.inner.lock();
+
+    // Check if address is even in the heap
+    if addr < allocator.heap_start || addr >= allocator.heap_end {
+        return None;
+    }
+
+    let mut current = allocator.head;
+
+    while let Some(block_ptr) = current {
+        let block = unsafe { block_ptr.as_ref() };
+        let block_start = block_ptr.as_ptr() as usize;
+        let block_end = block_start + block.size;
+
+        if addr >= block_start && addr < block_end {
+            return Some((block_start, block_end));
+        }
+
+        current = block.next;
+    }
+
+    None
+}
