@@ -144,10 +144,11 @@ fn draw_tooltip(x: i16, y: i16, start_addr: usize, end_addr: usize, region: &str
     let line2_y = line1_y + 10;
     font::draw_string_bg(text_x, line2_y, region, colors::WHITE, colors::DARK_GRAY);
 
-    // Draw allocation state
-    let state_str = if allocated { " (used)" } else { " (free)" };
-    let state_x = text_x + region.len() * 8;
-    font::draw_string_bg(state_x, line2_y, state_str, colors::LIGHT_GRAY, colors::DARK_GRAY);
+    // Draw allocation state (only show "(free)" for free blocks)
+    if !allocated {
+        let state_x = text_x + region.len() * 8;
+        font::draw_string_bg(state_x, line2_y, " (free)", colors::LIGHT_GRAY, colors::DARK_GRAY);
+    }
 }
 
 /// Update cursor and tooltip (called from timer tick)

@@ -2,7 +2,7 @@
 //!
 //! A simple first-fit linked list allocator implemented from scratch.
 //! Supports allocation and deallocation with proper alignment handling.
-//! Tracks allocations per-task for memory visualization.
+//! Each allocation includes a header with task ID for memory attribution.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};
@@ -27,8 +27,17 @@ fn get_current_task_id() -> Option<TaskId> {
     }
 }
 
-/// Minimum block size (must fit a FreeBlock header)
-const MIN_BLOCK_SIZE: usize = core::mem::size_of::<FreeBlock>();
+/// Header placed before each allocation to track ownership
+/// Size: 16 bytes (size: 8, task_id: 8 with padding)
+#[repr(C)]
+struct AllocationHeader {
+    /// Size of the user data (not including header)
+    size: usize,
+    /// Task that owns this allocation (None = kernel/boot)
+    task_id: Option<TaskId>,
+}
+
+const HEADER_SIZE: usize = core::mem::size_of::<AllocationHeader>();
 
 /// A free memory block in the linked list
 #[repr(C)]
@@ -36,6 +45,9 @@ struct FreeBlock {
     size: usize,
     next: Option<NonNull<FreeBlock>>,
 }
+
+/// Minimum block size (must fit a FreeBlock header)
+const MIN_BLOCK_SIZE: usize = core::mem::size_of::<FreeBlock>();
 
 impl FreeBlock {
     /// Create a new free block at the given address
@@ -50,151 +62,11 @@ impl FreeBlock {
     }
 }
 
-/// Maximum number of tracked allocations
-/// This limits memory overhead while allowing reasonable tracking
-const MAX_TRACKED_ALLOCATIONS: usize = 512;
-
-/// Entry for tracking an allocation with its owning task
-#[derive(Clone, Copy)]
-struct AllocationEntry {
-    /// Start address of the allocation
-    addr: usize,
-    /// Size of the allocation
-    size: usize,
-    /// Task that made this allocation (None = kernel/boot)
-    task_id: Option<TaskId>,
-}
-
-impl AllocationEntry {
-    const fn empty() -> Self {
-        AllocationEntry {
-            addr: 0,
-            size: 0,
-            task_id: None,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.size == 0
-    }
-}
-
-/// Allocation tracker for per-task memory accounting
-struct AllocationTracker {
-    entries: [AllocationEntry; MAX_TRACKED_ALLOCATIONS],
-    count: usize,
-}
-
-impl AllocationTracker {
-    const fn new() -> Self {
-        AllocationTracker {
-            entries: [AllocationEntry::empty(); MAX_TRACKED_ALLOCATIONS],
-            count: 0,
-        }
-    }
-
-    /// Record a new allocation
-    fn record(&mut self, addr: usize, size: usize, task_id: Option<TaskId>) {
-        // Find an empty slot
-        for entry in self.entries.iter_mut() {
-            if entry.is_empty() {
-                *entry = AllocationEntry { addr, size, task_id };
-                self.count += 1;
-                return;
-            }
-        }
-        // Table full - allocation will be untracked (but still works)
-    }
-
-    /// Remove an allocation record
-    fn remove(&mut self, addr: usize) -> Option<AllocationEntry> {
-        for entry in self.entries.iter_mut() {
-            if entry.addr == addr && !entry.is_empty() {
-                let old = *entry;
-                *entry = AllocationEntry::empty();
-                self.count -= 1;
-                return Some(old);
-            }
-        }
-        None
-    }
-
-    /// Find which task owns the majority of a memory range
-    /// Returns (task_id, bytes_owned) for the task with most bytes in range
-    fn find_majority_owner(&self, range_start: usize, range_end: usize) -> Option<(Option<TaskId>, usize)> {
-        // Count bytes per task in this range
-        // Use a simple approach: track up to 8 different tasks
-        const MAX_TASKS: usize = 8;
-        let mut task_bytes: [(Option<TaskId>, usize); MAX_TASKS] = [(None, 0); MAX_TASKS];
-        let mut num_tasks = 0;
-
-        for entry in self.entries.iter() {
-            if entry.is_empty() {
-                continue;
-            }
-
-            // Calculate overlap between allocation and range
-            let alloc_start = entry.addr;
-            let alloc_end = entry.addr + entry.size;
-
-            if alloc_end <= range_start || alloc_start >= range_end {
-                continue; // No overlap
-            }
-
-            let overlap_start = alloc_start.max(range_start);
-            let overlap_end = alloc_end.min(range_end);
-            let overlap_bytes = overlap_end - overlap_start;
-
-            if overlap_bytes == 0 {
-                continue;
-            }
-
-            // Find or add this task
-            let mut found = false;
-            for (tid, bytes) in task_bytes.iter_mut().take(num_tasks) {
-                if *tid == entry.task_id {
-                    *bytes += overlap_bytes;
-                    found = true;
-                    break;
-                }
-            }
-            if !found && num_tasks < MAX_TASKS {
-                task_bytes[num_tasks] = (entry.task_id, overlap_bytes);
-                num_tasks += 1;
-            }
-        }
-
-        // Find task with most bytes
-        let mut best: Option<(Option<TaskId>, usize)> = None;
-        for (tid, bytes) in task_bytes.iter().take(num_tasks) {
-            if *bytes > 0 {
-                match best {
-                    None => best = Some((*tid, *bytes)),
-                    Some((_, best_bytes)) if *bytes > best_bytes => {
-                        best = Some((*tid, *bytes));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        best
-    }
-
-    /// Get all allocations for a specific task
-    fn get_task_allocations(&self, task_id: Option<TaskId>) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.entries.iter()
-            .filter(move |e| !e.is_empty() && e.task_id == task_id)
-            .map(|e| (e.addr, e.size))
-    }
-}
-
 /// Linked list allocator
 pub struct LinkedListAllocator {
     head: Option<NonNull<FreeBlock>>,
     heap_start: usize,
     heap_end: usize,
-    tracker: AllocationTracker,
 }
 
 // Safety: We use spinlocks to protect access in the global allocator wrapper
@@ -207,7 +79,6 @@ impl LinkedListAllocator {
             head: None,
             heap_start: 0,
             heap_end: 0,
-            tracker: AllocationTracker::new(),
         }
     }
 
@@ -232,8 +103,13 @@ impl LinkedListAllocator {
 
     /// Allocate memory with the given layout
     pub fn allocate(&mut self, layout: Layout) -> *mut u8 {
-        let size = layout.size().max(MIN_BLOCK_SIZE);
-        let align = layout.align().max(core::mem::align_of::<FreeBlock>());
+        // We need space for header + user data
+        let user_size = layout.size().max(1);
+        let user_align = layout.align().max(core::mem::align_of::<usize>());
+
+        // Total size needed: header + padding for alignment + user data
+        // We'll allocate conservatively and adjust
+        let total_needed = HEADER_SIZE + user_align + user_size;
 
         // First-fit search
         let mut prev: Option<NonNull<FreeBlock>> = None;
@@ -244,12 +120,15 @@ impl LinkedListAllocator {
             let block_start = block_ptr.as_ptr() as usize;
             let block_size = block.size;
 
-            // Calculate aligned start address within this block
-            let aligned_start = Self::align_up(block_start, align);
-            let alignment_padding = aligned_start - block_start;
+            // Calculate where the header would go
+            let header_addr = block_start;
+            // User data starts after header, aligned
+            let user_addr = Self::align_up(header_addr + HEADER_SIZE, user_align);
+            // Total space needed from block start
+            let total_size = (user_addr - block_start) + user_size;
 
             // Check if block is large enough
-            if block_size >= alignment_padding + size {
+            if block_size >= total_size.max(MIN_BLOCK_SIZE) {
                 // This block works! Remove it from the free list
                 let next = block.next;
 
@@ -263,15 +142,8 @@ impl LinkedListAllocator {
                     }
                 }
 
-                // Handle leftover space at the beginning (due to alignment)
-                if alignment_padding >= MIN_BLOCK_SIZE {
-                    // Create a new free block for the alignment padding
-                    let new_block = unsafe { FreeBlock::new(block_start, alignment_padding) };
-                    self.add_free_block(new_block);
-                }
-
                 // Handle leftover space at the end
-                let used_end = aligned_start + size;
+                let used_end = user_addr + user_size;
                 let remaining = block_start + block_size - used_end;
                 if remaining >= MIN_BLOCK_SIZE {
                     // Create a new free block for remaining space
@@ -279,14 +151,19 @@ impl LinkedListAllocator {
                     self.add_free_block(new_block);
                 }
 
-                // Notify memory visualizer of allocation
-                crate::memvis::on_alloc(aligned_start, size);
+                // Write the allocation header
+                let header = header_addr as *mut AllocationHeader;
+                unsafe {
+                    (*header).size = user_size;
+                    (*header).task_id = get_current_task_id();
+                }
 
-                // Track allocation with current task ID
-                let task_id = get_current_task_id();
-                self.tracker.record(aligned_start, size, task_id);
+                // Notify memory visualizer of allocation (include header)
+                let alloc_start = header_addr;
+                let alloc_size = user_addr + user_size - header_addr;
+                crate::memvis::on_alloc(alloc_start, alloc_size);
 
-                return aligned_start as *mut u8;
+                return user_addr as *mut u8;
             }
 
             prev = current;
@@ -303,17 +180,35 @@ impl LinkedListAllocator {
     /// - ptr must have been allocated by this allocator
     /// - layout must match the original allocation
     pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
-        let size = layout.size().max(MIN_BLOCK_SIZE);
-        let addr = ptr as usize;
+        let user_addr = ptr as usize;
+        let user_align = layout.align().max(core::mem::align_of::<usize>());
 
-        // Remove from allocation tracker
-        self.tracker.remove(addr);
+        // Find the header (it's before the user data, aligned)
+        // Header is at: user_addr - padding - HEADER_SIZE
+        // But we stored size in header, so we can find it by scanning back
+        // Actually, header is at the aligned position before user data
+        let header_addr = user_addr - HEADER_SIZE;
+        // But user_addr might have extra alignment padding, so we need to find
+        // where the header actually is. Since we aligned user_addr up from
+        // header_addr + HEADER_SIZE, we can compute:
+        // The header is at the start of the allocation block
+
+        // Actually, let's recalculate: header is right before user data
+        // with potential alignment gap. We need to find where header starts.
+        // For simplicity, assume header is at user_addr - HEADER_SIZE
+        // This works if HEADER_SIZE is aligned, which it is (16 bytes)
+        let header = (user_addr - HEADER_SIZE) as *mut AllocationHeader;
+        let user_size = (*header).size;
+
+        // Calculate total block size (header + user data)
+        let block_start = header as usize;
+        let block_size = (user_addr - block_start) + user_size;
 
         // Notify memory visualizer of deallocation
-        crate::memvis::on_dealloc(addr, size);
+        crate::memvis::on_dealloc(block_start, block_size);
 
         // Create a new free block
-        let block = FreeBlock::new(addr, size);
+        let block = FreeBlock::new(block_start, block_size.max(MIN_BLOCK_SIZE));
         self.add_free_block(block);
 
         // Try to merge adjacent blocks
@@ -376,6 +271,11 @@ impl LinkedListAllocator {
 
             current = block.next;
         }
+    }
+
+    /// Get the header for an allocation at the given user address
+    fn get_header(user_addr: usize) -> &'static AllocationHeader {
+        unsafe { &*((user_addr - HEADER_SIZE) as *const AllocationHeader) }
     }
 }
 
@@ -507,7 +407,7 @@ pub fn get_heap_stats() -> (usize, usize) {
 
 /// Find the allocation that contains the given address
 ///
-/// Returns Some((start, end)) if the address is in an allocated region,
+/// Returns Some((start, end, task_id)) if the address is in an allocated region,
 /// or None if the address is in a free region or outside the heap.
 pub fn find_allocation(addr: usize) -> Option<(usize, usize)> {
     let allocator = ALLOCATOR.inner.lock();
@@ -582,6 +482,22 @@ pub fn find_free_region(addr: usize) -> Option<(usize, usize)> {
     None
 }
 
+/// Find which task owns the allocation at the given address
+///
+/// Returns Some(task_id) if the address is in an allocation,
+/// where task_id is None for kernel/boot allocations.
+/// Returns None if the address is not in an allocation.
+pub fn find_allocation_owner(addr: usize) -> Option<Option<TaskId>> {
+    // First check if this is in an allocation
+    if let Some((alloc_start, _alloc_end)) = find_allocation(addr) {
+        // Read the header to get task ID
+        // Header is at the start of the allocation
+        let header = unsafe { &*(alloc_start as *const AllocationHeader) };
+        return Some(header.task_id);
+    }
+    None
+}
+
 /// Find which task owns the majority of a memory range
 ///
 /// Returns Some((task_id, bytes)) where task_id is the task that owns
@@ -589,7 +505,94 @@ pub fn find_free_region(addr: usize) -> Option<(usize, usize)> {
 /// Returns None if no allocations overlap the range.
 pub fn find_majority_owner(range_start: usize, range_end: usize) -> Option<(Option<TaskId>, usize)> {
     let allocator = ALLOCATOR.inner.lock();
-    allocator.tracker.find_majority_owner(range_start, range_end)
+
+    // Check bounds
+    if range_start >= allocator.heap_end || range_end <= allocator.heap_start {
+        return None;
+    }
+
+    // Walk through allocated regions (gaps between free blocks)
+    let mut prev_end = allocator.heap_start;
+    let mut current = allocator.head;
+
+    // Track bytes per task (up to 8 tasks)
+    const MAX_TASKS: usize = 8;
+    let mut task_bytes: [(Option<TaskId>, usize); MAX_TASKS] = [(None, 0); MAX_TASKS];
+    let mut num_tasks = 0;
+
+    loop {
+        let (alloc_start, alloc_end) = if let Some(block_ptr) = current {
+            let block = unsafe { block_ptr.as_ref() };
+            let block_start = block_ptr.as_ptr() as usize;
+
+            // Allocation is from prev_end to block_start
+            let alloc = (prev_end, block_start);
+            prev_end = block_start + block.size;
+            current = block.next;
+            alloc
+        } else {
+            // Last allocation: from prev_end to heap_end
+            if prev_end < allocator.heap_end {
+                let alloc = (prev_end, allocator.heap_end);
+                prev_end = allocator.heap_end; // Mark as done
+                alloc
+            } else {
+                break;
+            }
+        };
+
+        // Skip if no actual allocation
+        if alloc_start >= alloc_end {
+            continue;
+        }
+
+        // Calculate overlap with range
+        if alloc_end <= range_start || alloc_start >= range_end {
+            continue; // No overlap
+        }
+
+        let overlap_start = alloc_start.max(range_start);
+        let overlap_end = alloc_end.min(range_end);
+        let overlap_bytes = overlap_end - overlap_start;
+
+        if overlap_bytes == 0 {
+            continue;
+        }
+
+        // Get task ID from allocation header
+        let header = unsafe { &*(alloc_start as *const AllocationHeader) };
+        let task_id = header.task_id;
+
+        // Add to task_bytes
+        let mut found = false;
+        for (tid, bytes) in task_bytes.iter_mut().take(num_tasks) {
+            if *tid == task_id {
+                *bytes += overlap_bytes;
+                found = true;
+                break;
+            }
+        }
+        if !found && num_tasks < MAX_TASKS {
+            task_bytes[num_tasks] = (task_id, overlap_bytes);
+            num_tasks += 1;
+        }
+    }
+
+    // Find task with most bytes
+    let mut best: Option<(Option<TaskId>, usize)> = None;
+    for (tid, bytes) in task_bytes.iter().take(num_tasks) {
+        if *bytes > 0 {
+            match best {
+                None => best = Some((*tid, *bytes)),
+                Some((_, best_bytes)) if *bytes > best_bytes => {
+                    best = Some((*tid, *bytes));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    best
 }
 
 /// Get all heap allocations for a specific task
@@ -598,21 +601,42 @@ pub fn find_majority_owner(range_start: usize, range_end: usize) -> Option<(Opti
 /// Use task_id = None to get kernel/boot allocations.
 pub fn get_task_heap_allocations(task_id: Option<TaskId>) -> alloc::vec::Vec<(usize, usize)> {
     let allocator = ALLOCATOR.inner.lock();
-    allocator.tracker.get_task_allocations(task_id).collect()
-}
+    let mut result = alloc::vec::Vec::new();
 
-/// Get all unique task IDs that have heap allocations
-pub fn get_tasks_with_allocations() -> alloc::vec::Vec<Option<TaskId>> {
-    let allocator = ALLOCATOR.inner.lock();
-    let mut tasks = alloc::vec::Vec::new();
+    // Walk through allocated regions (gaps between free blocks)
+    let mut prev_end = allocator.heap_start;
+    let mut current = allocator.head;
 
-    for entry in allocator.tracker.entries.iter() {
-        if !entry.is_empty() {
-            if !tasks.contains(&entry.task_id) {
-                tasks.push(entry.task_id);
+    loop {
+        let (alloc_start, alloc_end) = if let Some(block_ptr) = current {
+            let block = unsafe { block_ptr.as_ref() };
+            let block_start = block_ptr.as_ptr() as usize;
+
+            let alloc = (prev_end, block_start);
+            prev_end = block_start + block.size;
+            current = block.next;
+            alloc
+        } else {
+            if prev_end < allocator.heap_end {
+                let alloc = (prev_end, allocator.heap_end);
+                prev_end = allocator.heap_end;
+                alloc
+            } else {
+                break;
             }
+        };
+
+        if alloc_start >= alloc_end {
+            continue;
+        }
+
+        // Read header to check task ID
+        let header = unsafe { &*(alloc_start as *const AllocationHeader) };
+        if header.task_id == task_id {
+            // Return user-visible size, not including header
+            result.push((alloc_start + HEADER_SIZE, header.size));
         }
     }
 
-    tasks
+    result
 }
