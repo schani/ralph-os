@@ -114,32 +114,19 @@ pub fn send_frame(dst_mac: &[u8; 6], ethertype: u16, payload: &[u8]) -> bool {
         return false;
     }
 
-    // Get a TX buffer from the packet pool
-    if let Some(buffer) = super::packet::get_tx_buffer() {
-        // Build header
-        let header_len = build_frame(buffer, dst_mac, ethertype);
+    // Use a stack buffer instead of the TX packet pool to avoid
+    // any state corruption from buffer management
+    let mut buffer = [0u8; MAX_FRAME_SIZE];
 
-        // Copy payload
-        if header_len + payload.len() <= buffer.len() {
-            buffer[header_len..header_len + payload.len()].copy_from_slice(payload);
+    // Build header
+    let header_len = build_frame(&mut buffer, dst_mac, ethertype);
 
-            // Calculate frame length (pad to minimum if needed)
-            let send_len = core::cmp::max(frame_len, MIN_FRAME_SIZE);
+    // Copy payload
+    buffer[header_len..header_len + payload.len()].copy_from_slice(payload);
 
-            // Pad with zeros if needed
-            if frame_len < MIN_FRAME_SIZE {
-                for byte in buffer[frame_len..MIN_FRAME_SIZE].iter_mut() {
-                    *byte = 0;
-                }
-            }
+    // Calculate frame length (pad to minimum if needed)
+    let send_len = core::cmp::max(frame_len, MIN_FRAME_SIZE);
 
-            // Mark buffer ready and send
-            let _index = super::packet::tx_buffer_ready(send_len);
-
-            // Actually transmit via NE2000
-            return ne2000::send(&buffer[..send_len]);
-        }
-    }
-
-    false
+    // Actually transmit via NE2000
+    ne2000::send(&buffer[..send_len])
 }

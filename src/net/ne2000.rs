@@ -300,33 +300,42 @@ pub fn handle_interrupt() -> usize {
                 break;
             }
 
+
             // Handle receive
             if isr & ISR_PRX != 0 {
                 packets += receive_packets();
                 outb(base + ISR, ISR_PRX);
             }
 
-            // Handle transmit complete
+            // Handle transmit complete - just clear the interrupt
+            // (we don't use the TX packet buffer, so don't call tx_complete)
             if isr & ISR_PTX != 0 {
-                packet::tx_complete();
                 outb(base + ISR, ISR_PTX);
             }
 
             // Handle receive error
             if isr & ISR_RXE != 0 {
-                // Just clear for now
+                crate::println!("[ne2000] RX ERROR");
                 outb(base + ISR, ISR_RXE);
             }
 
             // Handle transmit error
             if isr & ISR_TXE != 0 {
+                crate::println!("[ne2000] TX ERROR");
                 outb(base + ISR, ISR_TXE);
             }
 
             // Handle overwrite warning (ring buffer overflow)
             if isr & ISR_OVW != 0 {
-                // Need to reset the NIC - for now just clear
-                outb(base + ISR, ISR_OVW);
+                crate::println!("[ne2000] OVERFLOW - resetting");
+                // Reset the NIC receive logic
+                outb(base + CR, CR_STP | CR_DMA_NONE);  // Stop
+                outb(base + ISR, ISR_OVW);  // Clear overflow
+                // Reset boundary
+                NE2000.next_pkt = RX_START + 1;
+                outb(base + BNRY, RX_START);
+                // Restart
+                outb(base + CR, CR_STA | CR_DMA_NONE);
             }
         }
 

@@ -18,16 +18,16 @@ pub const HEADER_SIZE: usize = 20;
 pub const MSS: u16 = 1460;
 
 /// Maximum number of concurrent connections
-const MAX_CONNECTIONS: usize = 4;
+const MAX_CONNECTIONS: usize = 8;
 
 /// Receive buffer size per connection
-const RX_BUFFER_SIZE: usize = 2048;
+const RX_BUFFER_SIZE: usize = 1024;
 
 /// Send buffer size per connection
-const TX_BUFFER_SIZE: usize = 2048;
+const TX_BUFFER_SIZE: usize = 512;
 
 /// Out-of-order segment buffer size
-const OOO_BUFFER_SIZE: usize = 4;
+const OOO_BUFFER_SIZE: usize = 2;
 
 /// Initial RTO (200ms in ticks at 100Hz)
 const INITIAL_RTO: u64 = 20;
@@ -605,6 +605,10 @@ pub fn process_packet(ip_header: &ipv4::Ipv4Header, data: &[u8]) {
                     process_segment(conn, &tcp, data, ip_header);
                 }
                 return;
+            } else {
+                // No slot available - drop the SYN silently
+                // Client will retry and we'll hopefully have a slot by then
+                return;
             }
         }
     }
@@ -624,10 +628,6 @@ fn process_segment(
 ) {
     // Handle RST
     if tcp.is_rst() {
-        println!(
-            "[tcp] RST received, closing {}:{}",
-            conn.remote_ip[0], conn.remote_port
-        );
         conn.reset();
         return;
     }
@@ -654,12 +654,6 @@ fn process_segment(
                     conn.state = TcpState::SynReceived;
                     conn.last_send_time = timer::ticks();
                     conn.retransmit_timer = timer::ticks() + conn.rto;
-                    println!(
-                        "[tcp] SYN-ACK sent to {}.{}.{}.{}:{}",
-                        conn.remote_ip[0], conn.remote_ip[1],
-                        conn.remote_ip[2], conn.remote_ip[3],
-                        conn.remote_port
-                    );
                 }
             }
         }
@@ -738,15 +732,18 @@ fn process_segment(
                 conn.snd_una = tcp.ack_num;
                 if tcp.is_fin() {
                     conn.rcv_nxt = conn.rcv_nxt.wrapping_add(1);
-                    send_segment(conn, FLAG_ACK, &[]);
+                    let sent = send_segment(conn, FLAG_ACK, &[]);
+                    println!("[tcp] FinWait1->TimeWait ACK sent={}", sent);
                     conn.state = TcpState::TimeWait;
                     conn.time_wait_timer = timer::ticks() + TIME_WAIT_TIMEOUT;
                 } else {
+                    println!("[tcp] FinWait1->FinWait2");
                     conn.state = TcpState::FinWait2;
                 }
             } else if tcp.is_fin() {
                 conn.rcv_nxt = conn.rcv_nxt.wrapping_add(1);
-                send_segment(conn, FLAG_ACK, &[]);
+                let sent = send_segment(conn, FLAG_ACK, &[]);
+                println!("[tcp] FinWait1->Closing ACK sent={}", sent);
                 conn.state = TcpState::Closing;
             }
         }
@@ -754,7 +751,8 @@ fn process_segment(
         TcpState::FinWait2 => {
             if tcp.is_fin() {
                 conn.rcv_nxt = conn.rcv_nxt.wrapping_add(1);
-                send_segment(conn, FLAG_ACK, &[]);
+                let sent = send_segment(conn, FLAG_ACK, &[]);
+                println!("[tcp] Sending final ACK, success={}", sent);
                 conn.state = TcpState::TimeWait;
                 conn.time_wait_timer = timer::ticks() + TIME_WAIT_TIMEOUT;
             }
@@ -999,6 +997,7 @@ fn send_pending_data(conn: &mut TcpControlBlock) {
     if pending == 0 {
         return;
     }
+    println!("[tcp] send_pending_data: {} bytes pending", pending);
 
     // Calculate how much we can send
     let flight_size = conn.snd_nxt.wrapping_sub(conn.snd_una) as usize;
@@ -1154,6 +1153,7 @@ pub fn send(sock: usize, data: &[u8]) -> isize {
             return -1;
         }
 
+        println!("[tcp] send() called with {} bytes", data.len());
         let n = conn.write(data);
         n as isize
     }

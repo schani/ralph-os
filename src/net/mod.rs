@@ -87,6 +87,7 @@ fn process_rx_packet(data: &[u8], len: usize) {
         return;
     };
 
+
     // Check if frame is for us
     if !eth_header.is_for_us() {
         return;
