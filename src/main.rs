@@ -12,6 +12,7 @@ mod cursor;
 mod elf;
 mod executable;
 mod font;
+mod gilbert;
 mod idt;
 mod interrupts;
 mod io;
@@ -70,6 +71,11 @@ pub extern "C" fn kernel_main() -> ! {
         HEAP_START + HEAP_SIZE,
         HEAP_SIZE / 1024
     );
+
+    // Initialize Gilbert curve tables (required for memory visualization)
+    if vga::is_enabled() {
+        gilbert::init();
+    }
 
     // Initialize memory visualizer (draws initial state if VGA enabled)
     memvis::init();

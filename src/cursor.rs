@@ -3,7 +3,7 @@
 //! Handles cursor sprite rendering and memory info tooltip display.
 //! Queries actual allocator data structures to show real allocation boundaries.
 
-use crate::{vga, font, mouse, memvis, allocator, program_alloc, executable};
+use crate::{vga, font, mouse, memvis, allocator, program_alloc, executable, gilbert};
 use crate::vga::colors;
 
 /// Cursor sprite size
@@ -76,10 +76,23 @@ fn draw_cursor_sprite(x: i16, y: i16) {
     }
 }
 
-/// Convert pixel position to memory address
+/// Convert pixel position to memory address using Gilbert curve
 fn pixel_to_addr(x: i16, y: i16) -> usize {
-    let pixel_index = (y as usize) * vga::WIDTH + (x as usize);
-    VIS_BASE + (pixel_index << 8)  // * 256 bytes per pixel
+    if x < 0 || y < 0 {
+        return VIS_BASE;
+    }
+
+    let x = x as usize;
+    let y = y as usize;
+
+    // Handle cursor in unused bottom 8 rows (y >= 192)
+    if x >= gilbert::WIDTH || y >= gilbert::HEIGHT {
+        return PROGRAM_END; // Beyond visualized memory
+    }
+
+    // Use Gilbert curve to convert (x, y) to curve index
+    let d = gilbert::xy_to_d(x, y);
+    VIS_BASE + (d << 8) // * 256 bytes per pixel
 }
 
 /// Memory region info returned by find_memory_region

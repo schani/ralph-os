@@ -3,11 +3,15 @@
 //! Provides real-time visualization of memory allocation state on VGA display.
 //! Each pixel represents 256 bytes of address space from 0x100000 to 0x1000000.
 //!
+//! Uses a Gilbert curve (generalized Hilbert) to map memory addresses to screen
+//! positions, ensuring that adjacent memory addresses map to adjacent pixels.
+//!
 //! Memory regions:
 //! - 0x100000 - 0x1FFFFF: Kernel (blue)
 //! - 0x200000 - 0x3FFFFF: Heap (green=free, red=allocated)
 //! - 0x400000 - 0xFFFFFF: Program region (cyan=free, magenta=allocated)
 
+use crate::gilbert;
 use crate::vga::{self, colors};
 
 /// Shadow buffer to track memory visualization state
@@ -30,30 +34,51 @@ const HEAP_END: usize = 0x400000;
 const PROGRAM_START: usize = 0x400000;
 const PROGRAM_END: usize = 0x1000000;
 
-/// Convert a memory address to a pixel index
+/// Convert a memory address to Gilbert curve index
 ///
 /// Returns None if the address is outside the visualized range.
 #[inline]
-fn addr_to_pixel(addr: usize) -> Option<usize> {
+fn addr_to_gilbert_index(addr: usize) -> Option<usize> {
     if addr < VIS_BASE || addr >= VIS_END {
         return None;
     }
-    Some((addr - VIS_BASE) >> 8) // divide by 256
+    let index = (addr - VIS_BASE) >> 8; // divide by 256
+    if index >= gilbert::TOTAL_PIXELS {
+        return None;
+    }
+    Some(index)
 }
 
-/// Fill a range in both shadow buffer and VGA
+/// Convert a memory address to screen (x, y) coordinates using Gilbert curve
 #[inline]
-fn fill_both(start: usize, count: usize, color: u8) {
-    // Update shadow buffer
+fn addr_to_xy(addr: usize) -> Option<(usize, usize)> {
+    addr_to_gilbert_index(addr).map(|d| gilbert::d_to_xy(d))
+}
+
+/// Set a single pixel in both shadow buffer and VGA using screen coordinates
+#[inline]
+fn set_pixel_xy(x: usize, y: usize, color: u8) {
+    if x >= vga::WIDTH || y >= vga::HEIGHT {
+        return;
+    }
+    let screen_index = y * vga::WIDTH + x;
     unsafe {
-        for i in start..start + count {
-            if i < SHADOW_BUFFER.len() {
-                SHADOW_BUFFER[i] = color;
-            }
+        if screen_index < SHADOW_BUFFER.len() {
+            SHADOW_BUFFER[screen_index] = color;
         }
     }
-    // Update VGA
-    vga::fill_range(start, count, color);
+    vga::set_pixel(x, y, color);
+}
+
+/// Fill a range of Gilbert indices with a color
+///
+/// Sets pixels at the Gilbert curve positions for indices [start_d, end_d)
+fn fill_gilbert_range(start_d: usize, end_d: usize, color: u8) {
+    let end_d = end_d.min(gilbert::TOTAL_PIXELS);
+    for d in start_d..end_d {
+        let (x, y) = gilbert::d_to_xy(d);
+        set_pixel_xy(x, y, color);
+    }
 }
 
 /// Get the appropriate "allocated" color for an address
@@ -82,7 +107,7 @@ fn free_color_for_addr(addr: usize) -> u8 {
 
 /// Initialize the memory visualizer
 ///
-/// Draws the initial memory map:
+/// Draws the initial memory map using Gilbert curve layout:
 /// - Kernel region as blue
 /// - Heap region as green (free)
 /// - Program region as cyan (free)
@@ -92,21 +117,21 @@ pub fn init() {
     }
 
     // Draw kernel region (0x100000 - 0x1FFFFF) as blue
-    let kernel_start_pixel = addr_to_pixel(VIS_BASE).unwrap_or(0);
-    let kernel_end_pixel = addr_to_pixel(KERNEL_END).unwrap_or(0);
-    fill_both(kernel_start_pixel, kernel_end_pixel - kernel_start_pixel, colors::BLUE);
+    let kernel_start_d = addr_to_gilbert_index(VIS_BASE).unwrap_or(0);
+    let kernel_end_d = addr_to_gilbert_index(KERNEL_END).unwrap_or(0);
+    fill_gilbert_range(kernel_start_d, kernel_end_d, colors::BLUE);
 
     // Draw heap region (0x200000 - 0x3FFFFF) as green (initially all free)
-    let heap_start_pixel = addr_to_pixel(HEAP_START).unwrap_or(0);
-    let heap_end_pixel = addr_to_pixel(HEAP_END).unwrap_or(0);
-    fill_both(heap_start_pixel, heap_end_pixel - heap_start_pixel, colors::GREEN);
+    let heap_start_d = addr_to_gilbert_index(HEAP_START).unwrap_or(0);
+    let heap_end_d = addr_to_gilbert_index(HEAP_END).unwrap_or(0);
+    fill_gilbert_range(heap_start_d, heap_end_d, colors::GREEN);
 
     // Draw program region (0x400000 - 0xFFFFFF) as cyan (initially all free)
-    let prog_start_pixel = addr_to_pixel(PROGRAM_START).unwrap_or(0);
-    let prog_end_pixel = addr_to_pixel(PROGRAM_END).unwrap_or(0);
-    fill_both(prog_start_pixel, prog_end_pixel - prog_start_pixel, colors::CYAN);
+    let prog_start_d = addr_to_gilbert_index(PROGRAM_START).unwrap_or(0);
+    let prog_end_d = addr_to_gilbert_index(PROGRAM_END).unwrap_or(0);
+    fill_gilbert_range(prog_start_d, prog_end_d, colors::CYAN);
 
-    crate::println!("[memvis] Visualization initialized");
+    crate::println!("[memvis] Gilbert curve visualization initialized");
 }
 
 /// Get pixel color from shadow buffer (for cursor tooltip)
@@ -158,30 +183,29 @@ pub fn on_dealloc(addr: usize, size: usize) {
     draw_region(addr, size, color);
 }
 
-/// Draw a memory region with the specified color (updates both shadow and VGA)
+/// Draw a memory region with the specified color using Gilbert curve layout
 fn draw_region(addr: usize, size: usize, color: u8) {
-    let start_pixel = match addr_to_pixel(addr) {
-        Some(p) => p,
+    let start_d = match addr_to_gilbert_index(addr) {
+        Some(d) => d,
         None => return,
     };
 
-    // Calculate end pixel (round up to include partial pixels)
+    // Calculate end Gilbert index (round up to include partial pixels)
     let end_addr = addr.saturating_add(size);
-    let end_pixel = match addr_to_pixel(end_addr.saturating_sub(1)) {
-        Some(p) => p + 1,
+    let end_d = match addr_to_gilbert_index(end_addr.saturating_sub(1)) {
+        Some(d) => d + 1,
         None => {
             // End is past our range, clip to max
             if end_addr > VIS_END {
-                addr_to_pixel(VIS_END - 1).map(|p| p + 1).unwrap_or(start_pixel)
+                gilbert::TOTAL_PIXELS
             } else {
                 return;
             }
         }
     };
 
-    let count = end_pixel.saturating_sub(start_pixel);
-    if count > 0 {
-        fill_both(start_pixel, count, color);
+    if end_d > start_d {
+        fill_gilbert_range(start_d, end_d, color);
     }
 }
 
@@ -193,8 +217,8 @@ pub fn on_program_alloc_init() {
         return;
     }
 
-    // Redraw program region as free
-    let prog_start_pixel = addr_to_pixel(PROGRAM_START).unwrap_or(0);
-    let prog_end_pixel = addr_to_pixel(PROGRAM_END).unwrap_or(0);
-    fill_both(prog_start_pixel, prog_end_pixel - prog_start_pixel, colors::CYAN);
+    // Redraw program region as free using Gilbert curve
+    let prog_start_d = addr_to_gilbert_index(PROGRAM_START).unwrap_or(0);
+    let prog_end_d = addr_to_gilbert_index(PROGRAM_END).unwrap_or(gilbert::TOTAL_PIXELS);
+    fill_gilbert_range(prog_start_d, prog_end_d, colors::CYAN);
 }
