@@ -31,6 +31,8 @@ pub enum Token {
     Mid,
     Left,
     Instr,
+    Str,
+    Val,
     // Control flow
     Gosub,
     Return,
@@ -266,6 +268,8 @@ impl<'a> Lexer<'a> {
             "MID" | "MID$" => Token::Mid,
             "LEFT" | "LEFT$" => Token::Left,
             "INSTR" => Token::Instr,
+            "STR" | "STR$" => Token::Str,
+            "VAL" => Token::Val,
             "RECV" | "RECV$" => Token::Recv,
             // Control flow
             "GOSUB" => Token::Gosub,

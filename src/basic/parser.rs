@@ -39,6 +39,10 @@ pub enum Expr {
     Left(Box<Expr>, Box<Expr>),
     /// INSTR(haystack$, needle$) - find substring
     Instr(Box<Expr>, Box<Expr>),
+    /// STR$(n) - convert number to string
+    Str(Box<Expr>),
+    /// VAL(s$) - convert string to number
+    Val(Box<Expr>),
     // Network functions
     /// SOCKET() - create socket
     Socket,
@@ -681,6 +685,32 @@ impl<'a> Parser<'a> {
                 }
                 self.advance();
                 Ok(Expr::Instr(Box::new(haystack), Box::new(needle)))
+            }
+            Token::Str => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after STR$".into()));
+                }
+                self.advance();
+                let arg = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after STR$".into()));
+                }
+                self.advance();
+                Ok(Expr::Str(Box::new(arg)))
+            }
+            Token::Val => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after VAL".into()));
+                }
+                self.advance();
+                let arg = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after VAL".into()));
+                }
+                self.advance();
+                Ok(Expr::Val(Box::new(arg)))
             }
             // Network functions
             Token::Socket => {

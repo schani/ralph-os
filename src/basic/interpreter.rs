@@ -555,6 +555,19 @@ fn eval_expr(variables: &BTreeMap<String, Value>, expr: &Expr) -> Result<Value, 
             let pos = haystack.find(&needle).map(|p| p + 1).unwrap_or(0);
             Ok(Value::Integer(pos as i64))
         }
+        Expr::Str(arg) => {
+            let n = eval_expr(variables, arg)?
+                .as_integer()
+                .ok_or("STR$ requires numeric argument")?;
+            Ok(Value::String(alloc::format!("{}", n)))
+        }
+        Expr::Val(arg) => {
+            let s = eval_expr(variables, arg)?
+                .as_string()
+                .ok_or("VAL requires string argument")?;
+            let n = s.trim().parse::<i64>().unwrap_or(0);
+            Ok(Value::Integer(n))
+        }
 
         // Array access
         Expr::ArrayAccess { name, index } => {
@@ -759,6 +772,8 @@ fn format_expr(expr: &Expr) -> String {
         }
         Expr::Left(s, n) => alloc::format!("LEFT$({}, {})", format_expr(s), format_expr(n)),
         Expr::Instr(h, n) => alloc::format!("INSTR({}, {})", format_expr(h), format_expr(n)),
+        Expr::Str(arg) => alloc::format!("STR$({})", format_expr(arg)),
+        Expr::Val(arg) => alloc::format!("VAL({})", format_expr(arg)),
         // Array access
         Expr::ArrayAccess { name, index } => alloc::format!("{}({})", name, format_expr(index)),
         // Network functions
