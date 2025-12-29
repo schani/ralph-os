@@ -309,6 +309,7 @@ pub fn http_server_task() {
 316 GOTO 300
 320 PRINT "Got request"
 330 SEND C, RESP$
+335 SLEEP 100
 340 CLOSE C
 350 PRINT "Response sent"
 360 GOTO 200

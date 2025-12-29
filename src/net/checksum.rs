@@ -42,7 +42,8 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
 /// Verify an Internet checksum
 ///
 /// When calculated over data that includes a valid checksum field,
-/// the result should be 0 (or 0xFFFF depending on implementation).
+/// the one's complement sum should equal 0xFFFF (all ones).
+/// After the final complement in fold_checksum, this becomes 0x0000.
 ///
 /// # Arguments
 /// * `data` - The data including checksum field
@@ -52,7 +53,8 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
 pub fn verify_checksum(data: &[u8]) -> bool {
     let sum = checksum_accumulate(data);
     let folded = fold_checksum(sum);
-    folded == 0xFFFF
+    // For valid data with checksum, folded complement should be 0
+    folded == 0x0000
 }
 
 /// Accumulate checksum over a buffer (partial checksum)

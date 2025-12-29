@@ -351,7 +351,7 @@ fn receive_packets() -> usize {
                 break;
             }
 
-            // Read packet header (4 bytes) via remote DMA
+            // Read packet header (4 bytes) via remote DMA using 16-bit reads
             let page = NE2000.next_pkt;
             outb(base + RSAR0, 0);
             outb(base + RSAR1, page);
@@ -359,16 +359,17 @@ fn receive_packets() -> usize {
             outb(base + RBCR1, 0);
             outb(base + CR, CR_STA | CR_DMA_READ);
 
-            let status = inb(base + DATA);
-            let next = inb(base + DATA);
-            let len_lo = inb(base + DATA);
-            let len_hi = inb(base + DATA);
+            // NE2000 uses 16-bit data transfers
+            let word0 = inw(base + DATA);  // status (low) + next (high)
+            let word1 = inw(base + DATA);  // length (little endian)
 
             // Wait for DMA complete
             while inb(base + ISR) & ISR_RDC == 0 {}
             outb(base + ISR, ISR_RDC);
 
-            let len = ((len_hi as usize) << 8) | (len_lo as usize);
+            let status = (word0 & 0xFF) as u8;
+            let next = ((word0 >> 8) & 0xFF) as u8;
+            let len = word1 as usize;
 
             // Sanity check length
             if len < 4 || len > 1536 {
