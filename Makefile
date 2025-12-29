@@ -89,6 +89,12 @@ $(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(EXEC_TABLE)
 	fi
 	# Append kernel
 	cat $(KERNEL_BIN) >> $@
+	# Pad to 4-byte alignment (exec table search requires this)
+	@CURRENT_SIZE=$$(stat -c %s $@); \
+	PADDING=$$((4 - (CURRENT_SIZE % 4))); \
+	if [ $$PADDING -lt 4 ]; then \
+		dd if=/dev/zero bs=1 count=$$PADDING >> $@ 2>/dev/null; \
+	fi
 	# Append executable table (header + programs)
 	cat $(EXEC_TABLE) >> $@
 	# Check total size
