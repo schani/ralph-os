@@ -1,9 +1,9 @@
 //! Mouse Cursor and Tooltip
 //!
 //! Handles cursor sprite rendering and memory info tooltip display.
+//! Simply redraws the entire screen on each update - no save/restore needed.
 
-use core::sync::atomic::{AtomicI16, AtomicBool, Ordering};
-use crate::{vga, font, mouse};
+use crate::{vga, font, mouse, memvis};
 use crate::vga::colors;
 
 /// Cursor sprite size
@@ -40,71 +40,17 @@ const TOOLTIP_WIDTH: usize = 152;   // 19 chars * 8 pixels
 const TOOLTIP_HEIGHT: usize = 20;   // 2 lines * 8 + 4 padding
 const TOOLTIP_PADDING: usize = 2;
 
-/// Combined save area - large enough for cursor + tooltip + gap
-const SAVE_WIDTH: usize = 180;
-const SAVE_HEIGHT: usize = 50;
-
-/// Saved pixels (single combined area to avoid overlap issues)
-static mut SAVED_PIXELS: [[u8; SAVE_WIDTH]; SAVE_HEIGHT] = [[0; SAVE_WIDTH]; SAVE_HEIGHT];
-
-/// Last saved area position
-static LAST_SAVE_X: AtomicI16 = AtomicI16::new(-1000);
-static LAST_SAVE_Y: AtomicI16 = AtomicI16::new(-1000);
-
 /// Memory region boundaries (must match memvis.rs)
 const VIS_BASE: usize = 0x100000;
 const KERNEL_END: usize = 0x200000;
 const HEAP_END: usize = 0x400000;
 const PROGRAM_END: usize = 0x1000000;
 
-/// Read a pixel from VGA framebuffer
-#[inline]
-fn read_pixel(x: usize, y: usize) -> u8 {
-    if x >= vga::WIDTH || y >= vga::HEIGHT {
-        return 0;
-    }
-    let offset = y * vga::WIDTH + x;
-    unsafe {
-        let fb = 0xA0000 as *const u8;
-        fb.add(offset).read_volatile()
-    }
-}
-
-/// Save pixels under combined cursor+tooltip area
-fn save_area(x: i16, y: i16) {
-    for row in 0..SAVE_HEIGHT {
-        for col in 0..SAVE_WIDTH {
-            let px = x as isize + col as isize;
-            let py = y as isize + row as isize;
-            unsafe {
-                if px >= 0 && py >= 0 {
-                    SAVED_PIXELS[row][col] = read_pixel(px as usize, py as usize);
-                }
-            }
-        }
-    }
-}
-
-/// Restore saved pixels
-fn restore_area(x: i16, y: i16) {
-    if x < -500 {
-        return; // Never saved
-    }
-    for row in 0..SAVE_HEIGHT {
-        for col in 0..SAVE_WIDTH {
-            let px = x as isize + col as isize;
-            let py = y as isize + row as isize;
-            if px >= 0 && py >= 0 && (px as usize) < vga::WIDTH && (py as usize) < vga::HEIGHT {
-                unsafe {
-                    vga::set_pixel(px as usize, py as usize, SAVED_PIXELS[row][col]);
-                }
-            }
-        }
-    }
-}
-
 /// Draw cursor sprite at position
 fn draw_cursor_sprite(x: i16, y: i16) {
+    if x < 0 || y < 0 {
+        return;
+    }
     let bx = x as usize;
     let by = y as usize;
 
@@ -113,11 +59,15 @@ fn draw_cursor_sprite(x: i16, y: i16) {
         let sprite_bits = CURSOR_SPRITE[row];
 
         for col in 0..CURSOR_WIDTH {
-            let mask = 0x80 >> col;
-            if sprite_bits & mask != 0 {
-                vga::set_pixel(bx + col, by + row, colors::WHITE);
-            } else if outline_bits & mask != 0 {
-                vga::set_pixel(bx + col, by + row, colors::BLACK);
+            let px = bx + col;
+            let py = by + row;
+            if px < vga::WIDTH && py < vga::HEIGHT {
+                let mask = 0x80 >> col;
+                if sprite_bits & mask != 0 {
+                    vga::set_pixel(px, py, colors::WHITE);
+                } else if outline_bits & mask != 0 {
+                    vga::set_pixel(px, py, colors::BLACK);
+                }
             }
         }
     }
@@ -130,12 +80,9 @@ fn pixel_to_addr(x: i16, y: i16) -> usize {
 }
 
 /// Get region name and allocation state for an address
-fn get_region_info(addr: usize) -> (&'static str, bool) {
-    // Read the pixel color to determine allocation state
-    let pixel_index = (addr - VIS_BASE) >> 8;
-    let py = pixel_index / vga::WIDTH;
-    let px = pixel_index % vga::WIDTH;
-    let pixel_color = read_pixel(px, py);
+fn get_region_info(addr: usize, x: i16, y: i16) -> (&'static str, bool) {
+    // Read the pixel color from shadow buffer (not VGA, which may have cursor overlay)
+    let pixel_color = memvis::get_pixel(x as usize, y as usize);
 
     if addr < KERNEL_END {
         ("Kernel", true)  // Kernel is always "allocated"
@@ -174,6 +121,9 @@ fn calculate_tooltip_pos(cursor_x: i16, cursor_y: i16) -> (i16, i16) {
 
 /// Draw tooltip box with memory info
 fn draw_tooltip(x: i16, y: i16, addr: usize, region: &str, allocated: bool) {
+    if x < 0 || y < 0 {
+        return;
+    }
     let bx = x as usize;
     let by = y as usize;
 
@@ -218,29 +168,22 @@ pub fn update() {
         return;
     }
 
-    // Get new position
-    let (new_x, new_y) = mouse::position();
-    let old_x = LAST_SAVE_X.load(Ordering::Relaxed);
-    let old_y = LAST_SAVE_Y.load(Ordering::Relaxed);
+    // Get cursor position
+    let (x, y) = mouse::position();
 
-    // Restore old area
-    restore_area(old_x, old_y);
+    // Get memory info BEFORE redrawing (so we read the correct pixel color)
+    let addr = pixel_to_addr(x, y);
+    let (region, allocated) = get_region_info(addr, x, y);
 
-    // Save pixels under new position
-    save_area(new_x, new_y);
+    // Redraw the entire memory visualization
+    memvis::redraw();
 
-    // Draw cursor
-    draw_cursor_sprite(new_x, new_y);
+    // Draw cursor on top
+    draw_cursor_sprite(x, y);
 
-    // Calculate and draw tooltip
-    let (tooltip_x, tooltip_y) = calculate_tooltip_pos(new_x, new_y);
-    let addr = pixel_to_addr(new_x, new_y);
-    let (region, allocated) = get_region_info(addr);
+    // Draw tooltip on top
+    let (tooltip_x, tooltip_y) = calculate_tooltip_pos(x, y);
     draw_tooltip(tooltip_x, tooltip_y, addr, region, allocated);
-
-    // Update state
-    LAST_SAVE_X.store(new_x, Ordering::Relaxed);
-    LAST_SAVE_Y.store(new_y, Ordering::Relaxed);
 
     mouse::clear_dirty();
 }
@@ -253,21 +196,16 @@ pub fn init() {
 
     let (x, y) = mouse::position();
 
-    // Save pixels under cursor area
-    save_area(x, y);
+    // Get memory info
+    let addr = pixel_to_addr(x, y);
+    let (region, allocated) = get_region_info(addr, x, y);
 
     // Draw cursor
     draw_cursor_sprite(x, y);
 
     // Draw tooltip
     let (tooltip_x, tooltip_y) = calculate_tooltip_pos(x, y);
-    let addr = pixel_to_addr(x, y);
-    let (region, allocated) = get_region_info(addr);
     draw_tooltip(tooltip_x, tooltip_y, addr, region, allocated);
-
-    // Store position
-    LAST_SAVE_X.store(x, Ordering::Relaxed);
-    LAST_SAVE_Y.store(y, Ordering::Relaxed);
 
     mouse::clear_dirty();
 }
