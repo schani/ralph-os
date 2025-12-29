@@ -4,6 +4,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use super::value::Value;
 use super::parser::{Statement, Expr, BinaryOp, ForState, Parser};
@@ -37,6 +38,8 @@ pub struct Interpreter {
     variables: BTreeMap<String, Value>,
     /// FOR loop stack
     for_stack: Vec<ForState>,
+    /// GOSUB return stack
+    return_stack: Vec<usize>,
     /// Current execution status
     status: ExecutionStatus,
     /// Whether program is running
@@ -52,6 +55,7 @@ impl Interpreter {
             current_idx: None,
             variables: BTreeMap::new(),
             for_stack: Vec::new(),
+            return_stack: Vec::new(),
             status: ExecutionStatus::Ready,
             running: false,
         }
@@ -103,6 +107,7 @@ impl Interpreter {
         self.current_idx = Some(0);
         self.variables.clear();
         self.for_stack.clear();
+        self.return_stack.clear();
         self.running = true;
         self.status = ExecutionStatus::Ready;
     }
@@ -156,9 +161,11 @@ impl Interpreter {
         match execute_statement(
             &mut self.variables,
             &mut self.for_stack,
+            &mut self.return_stack,
             &self.line_order,
             stmt,
             line_num,
+            idx,
         ) {
             Ok(action) => {
                 match action {
@@ -181,6 +188,10 @@ impl Interpreter {
                             self.status =
                                 ExecutionStatus::Error(alloc::format!("Line {} not found", target));
                         }
+                    }
+                    NextAction::JumpToIndex(new_idx) => {
+                        self.current_idx = Some(new_idx);
+                        self.status = ExecutionStatus::Ready;
                     }
                     NextAction::Sleep(ms) => {
                         self.current_idx = Some(idx + 1);
@@ -215,12 +226,16 @@ impl Interpreter {
         match execute_statement(
             &mut self.variables,
             &mut self.for_stack,
+            &mut self.return_stack,
             &self.line_order,
             stmt,
             0,
+            0,
         ) {
             Ok(NextAction::Continue) | Ok(NextAction::End) => ExecutionStatus::Ready,
-            Ok(NextAction::Jump(_)) => ExecutionStatus::Error("Cannot GOTO in immediate mode".into()),
+            Ok(NextAction::Jump(_)) | Ok(NextAction::JumpToIndex(_)) => {
+                ExecutionStatus::Error("Cannot GOTO/GOSUB in immediate mode".into())
+            }
             Ok(NextAction::Sleep(ms)) => ExecutionStatus::Sleeping(ms),
             Err(e) => ExecutionStatus::Error(e),
         }
@@ -231,6 +246,7 @@ impl Interpreter {
 enum NextAction {
     Continue,
     Jump(u32),
+    JumpToIndex(usize),  // For RETURN - jump to specific index
     Sleep(u64),
     End,
 }
@@ -238,15 +254,17 @@ enum NextAction {
 /// Execute a BASIC statement
 ///
 /// Takes split borrows to avoid cloning the statement:
-/// - variables and for_stack are mutable state
+/// - variables, for_stack, return_stack are mutable state
 /// - line_order is needed for FOR loop body lookup
 /// - stmt is borrowed from the program BTreeMap
 fn execute_statement(
     variables: &mut BTreeMap<String, Value>,
     for_stack: &mut Vec<ForState>,
+    return_stack: &mut Vec<usize>,
     line_order: &[u32],
     stmt: &Statement,
     current_line: u32,
+    current_idx: usize,
 ) -> Result<NextAction, String> {
     match stmt {
         Statement::Print(exprs) => {
@@ -280,6 +298,19 @@ fn execute_statement(
         }
 
         Statement::Goto(target) => Ok(NextAction::Jump(*target)),
+
+        Statement::Gosub(target) => {
+            // Push return address (next line index) onto stack
+            return_stack.push(current_idx + 1);
+            Ok(NextAction::Jump(*target))
+        }
+
+        Statement::Return => {
+            match return_stack.pop() {
+                Some(idx) => Ok(NextAction::JumpToIndex(idx)),
+                None => Err("RETURN without GOSUB".into()),
+            }
+        }
 
         Statement::For {
             var,
@@ -372,11 +403,71 @@ fn execute_statement(
                 Err(e) => Err(alloc::format!("SPAWN failed: {:?}", e)),
             }
         }
+
+        Statement::Dim { name, size } => {
+            let size = eval_expr(variables, size)?
+                .as_integer()
+                .ok_or("DIM size must be numeric")? as usize;
+            // Create array based on name suffix ($ = string, otherwise integer)
+            if name.ends_with('$') {
+                variables.insert(name.clone(), Value::StringArray(vec![String::new(); size + 1]));
+            } else {
+                variables.insert(name.clone(), Value::IntArray(vec![0; size + 1]));
+            }
+            Ok(NextAction::Continue)
+        }
+
+        Statement::ArrayAssign { name, index, value } => {
+            let idx = eval_expr(variables, index)?
+                .as_integer()
+                .ok_or("Array index must be numeric")? as usize;
+            let val = eval_expr(variables, value)?;
+
+            match variables.get_mut(name) {
+                Some(Value::StringArray(arr)) => {
+                    if idx < arr.len() {
+                        arr[idx] = val.as_string().unwrap_or_default();
+                    } else {
+                        return Err(alloc::format!("Array index {} out of bounds", idx));
+                    }
+                }
+                Some(Value::IntArray(arr)) => {
+                    if idx < arr.len() {
+                        arr[idx] = val.as_integer().unwrap_or(0);
+                    } else {
+                        return Err(alloc::format!("Array index {} out of bounds", idx));
+                    }
+                }
+                _ => return Err(alloc::format!("Array {} not found", name)),
+            }
+            Ok(NextAction::Continue)
+        }
+
+        Statement::Send { sock, data } => {
+            let sock_val = eval_expr(variables, sock)?
+                .as_integer()
+                .ok_or("SEND socket must be numeric")? as usize;
+            let data_val = eval_expr(variables, data)?
+                .as_string()
+                .ok_or("SEND data must be string")?;
+            crate::net::tcp::send(sock_val, data_val.as_bytes());
+            Ok(NextAction::Continue)
+        }
+
+        Statement::NetClose(sock) => {
+            let sock_val = eval_expr(variables, sock)?
+                .as_integer()
+                .ok_or("CLOSE socket must be numeric")? as usize;
+            crate::net::tcp::close(sock_val);
+            Ok(NextAction::Continue)
+        }
     }
 }
 
 /// Evaluate a BASIC expression
 fn eval_expr(variables: &BTreeMap<String, Value>, expr: &Expr) -> Result<Value, String> {
+    use crate::net::tcp;
+
     match expr {
         Expr::Integer(n) => Ok(Value::Integer(*n)),
         Expr::StringLit(s) => Ok(Value::String(s.clone())),
@@ -388,7 +479,7 @@ fn eval_expr(variables: &BTreeMap<String, Value>, expr: &Expr) -> Result<Value, 
             let val = eval_expr(variables, inner)?;
             match val {
                 Value::Integer(n) => Ok(Value::Integer(-n)),
-                Value::String(_) => Err("Cannot negate string".into()),
+                _ => Err("Cannot negate non-integer".into()),
             }
         }
         Expr::BinaryOp { left, op, right } => {
@@ -407,6 +498,138 @@ fn eval_expr(variables: &BTreeMap<String, Value>, expr: &Expr) -> Result<Value, 
                 _ => Err("MEM: invalid argument (use 0 for used, 1 for free)".into()),
             }
         }
+
+        // String functions
+        Expr::Chr(arg) => {
+            let n = eval_expr(variables, arg)?
+                .as_integer()
+                .ok_or("CHR$ requires numeric argument")?;
+            let ch = (n as u8) as char;
+            Ok(Value::String(alloc::format!("{}", ch)))
+        }
+        Expr::Asc(arg) => {
+            let s = eval_expr(variables, arg)?
+                .as_string()
+                .ok_or("ASC requires string argument")?;
+            let n = s.bytes().next().unwrap_or(0) as i64;
+            Ok(Value::Integer(n))
+        }
+        Expr::Len(arg) => {
+            let s = eval_expr(variables, arg)?
+                .as_string()
+                .ok_or("LEN requires string argument")?;
+            Ok(Value::Integer(s.len() as i64))
+        }
+        Expr::Mid(s_expr, start_expr, len_expr) => {
+            let s = eval_expr(variables, s_expr)?
+                .as_string()
+                .ok_or("MID$ requires string argument")?;
+            let start = eval_expr(variables, start_expr)?
+                .as_integer()
+                .ok_or("MID$ start must be numeric")? as usize;
+            let len = eval_expr(variables, len_expr)?
+                .as_integer()
+                .ok_or("MID$ length must be numeric")? as usize;
+            // BASIC uses 1-based indexing
+            let result: String = s.chars().skip(start.saturating_sub(1)).take(len).collect();
+            Ok(Value::String(result))
+        }
+        Expr::Left(s_expr, n_expr) => {
+            let s = eval_expr(variables, s_expr)?
+                .as_string()
+                .ok_or("LEFT$ requires string argument")?;
+            let n = eval_expr(variables, n_expr)?
+                .as_integer()
+                .ok_or("LEFT$ count must be numeric")? as usize;
+            let result: String = s.chars().take(n).collect();
+            Ok(Value::String(result))
+        }
+        Expr::Instr(haystack_expr, needle_expr) => {
+            let haystack = eval_expr(variables, haystack_expr)?
+                .as_string()
+                .ok_or("INSTR requires string arguments")?;
+            let needle = eval_expr(variables, needle_expr)?
+                .as_string()
+                .ok_or("INSTR requires string arguments")?;
+            // Return 1-based position, or 0 if not found
+            let pos = haystack.find(&needle).map(|p| p + 1).unwrap_or(0);
+            Ok(Value::Integer(pos as i64))
+        }
+
+        // Array access
+        Expr::ArrayAccess { name, index } => {
+            let idx = eval_expr(variables, index)?
+                .as_integer()
+                .ok_or("Array index must be numeric")? as usize;
+            match variables.get(name) {
+                Some(Value::StringArray(arr)) => {
+                    Ok(Value::String(arr.get(idx).cloned().unwrap_or_default()))
+                }
+                Some(Value::IntArray(arr)) => {
+                    Ok(Value::Integer(*arr.get(idx).unwrap_or(&0)))
+                }
+                _ => Err(alloc::format!("Array {} not found", name)),
+            }
+        }
+
+        // Network functions
+        Expr::Socket => {
+            match tcp::socket() {
+                Some(h) => Ok(Value::Integer(h as i64)),
+                None => Ok(Value::Integer(-1)),
+            }
+        }
+        Expr::Listen(sock_expr, port_expr) => {
+            let sock = eval_expr(variables, sock_expr)?
+                .as_integer()
+                .ok_or("LISTEN socket must be numeric")? as usize;
+            let port = eval_expr(variables, port_expr)?
+                .as_integer()
+                .ok_or("LISTEN port must be numeric")? as u16;
+            let ok = tcp::listen(sock, port);
+            Ok(Value::Integer(if ok { 1 } else { 0 }))
+        }
+        Expr::Accept(sock_expr) => {
+            let sock = eval_expr(variables, sock_expr)?
+                .as_integer()
+                .ok_or("ACCEPT socket must be numeric")? as usize;
+            match tcp::accept(sock) {
+                Some(h) => Ok(Value::Integer(h as i64)),
+                None => Ok(Value::Integer(-1)),
+            }
+        }
+        Expr::Recv(sock_expr) => {
+            let sock = eval_expr(variables, sock_expr)?
+                .as_integer()
+                .ok_or("RECV$ socket must be numeric")? as usize;
+            let mut buf = [0u8; 1024];
+            match tcp::recv(sock, &mut buf) {
+                n if n > 0 => {
+                    let s = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
+                    Ok(Value::String(s))
+                }
+                _ => Ok(Value::String(String::new())),
+            }
+        }
+        Expr::Sockstate(sock_expr) => {
+            let sock = eval_expr(variables, sock_expr)?
+                .as_integer()
+                .ok_or("SOCKSTATE socket must be numeric")? as usize;
+            let code = match tcp::get_state(sock) {
+                tcp::TcpState::Closed => 0,
+                tcp::TcpState::Listen => 1,
+                tcp::TcpState::SynSent => 2,
+                tcp::TcpState::SynReceived => 3,
+                tcp::TcpState::Established => 4,
+                tcp::TcpState::FinWait1 => 5,
+                tcp::TcpState::FinWait2 => 6,
+                tcp::TcpState::CloseWait => 7,
+                tcp::TcpState::Closing => 8,
+                tcp::TcpState::LastAck => 9,
+                tcp::TcpState::TimeWait => 10,
+            };
+            Ok(Value::Integer(code))
+        }
     }
 }
 
@@ -417,6 +640,15 @@ fn eval_binary_op(l: &Value, op: &BinaryOp, r: &Value) -> Result<Value, String> 
         let mut result = ls.clone();
         result.push_str(rs);
         return Ok(Value::String(result));
+    }
+
+    // Handle string comparison
+    if let (Value::String(ls), Value::String(rs)) = (l, r) {
+        return match op {
+            BinaryOp::Eq => Ok(Value::Integer(if ls == rs { 1 } else { 0 })),
+            BinaryOp::Ne => Ok(Value::Integer(if ls != rs { 1 } else { 0 })),
+            _ => Err("Invalid string operation".into()),
+        };
     }
 
     // Numeric operations
@@ -465,6 +697,8 @@ fn format_statement(stmt: &Statement) -> String {
             alloc::format!("IF {} THEN {}", format_expr(condition), then_line)
         }
         Statement::Goto(line) => alloc::format!("GOTO {}", line),
+        Statement::Gosub(line) => alloc::format!("GOSUB {}", line),
+        Statement::Return => String::from("RETURN"),
         Statement::For { var, start, end, step } => {
             alloc::format!("FOR {} = {} TO {} STEP {}", var, format_expr(start), format_expr(end), format_expr(step))
         }
@@ -478,6 +712,18 @@ fn format_statement(stmt: &Statement) -> String {
                 s.push_str(&alloc::format!(", \"{}\"", arg));
             }
             s
+        }
+        Statement::Dim { name, size } => {
+            alloc::format!("DIM {}({})", name, format_expr(size))
+        }
+        Statement::ArrayAssign { name, index, value } => {
+            alloc::format!("{}({}) = {}", name, format_expr(index), format_expr(value))
+        }
+        Statement::Send { sock, data } => {
+            alloc::format!("SEND {}, {}", format_expr(sock), format_expr(data))
+        }
+        Statement::NetClose(sock) => {
+            alloc::format!("CLOSE {}", format_expr(sock))
         }
     }
 }
@@ -504,5 +750,24 @@ fn format_expr(expr: &Expr) -> String {
         }
         Expr::Negate(inner) => alloc::format!("-{}", format_expr(inner)),
         Expr::Mem(arg) => alloc::format!("MEM({})", format_expr(arg)),
+        // String functions
+        Expr::Chr(arg) => alloc::format!("CHR$({})", format_expr(arg)),
+        Expr::Asc(arg) => alloc::format!("ASC({})", format_expr(arg)),
+        Expr::Len(arg) => alloc::format!("LEN({})", format_expr(arg)),
+        Expr::Mid(s, start, len) => {
+            alloc::format!("MID$({}, {}, {})", format_expr(s), format_expr(start), format_expr(len))
+        }
+        Expr::Left(s, n) => alloc::format!("LEFT$({}, {})", format_expr(s), format_expr(n)),
+        Expr::Instr(h, n) => alloc::format!("INSTR({}, {})", format_expr(h), format_expr(n)),
+        // Array access
+        Expr::ArrayAccess { name, index } => alloc::format!("{}({})", name, format_expr(index)),
+        // Network functions
+        Expr::Socket => String::from("SOCKET()"),
+        Expr::Listen(sock, port) => {
+            alloc::format!("LISTEN({}, {})", format_expr(sock), format_expr(port))
+        }
+        Expr::Accept(sock) => alloc::format!("ACCEPT({})", format_expr(sock)),
+        Expr::Recv(sock) => alloc::format!("RECV$({})", format_expr(sock)),
+        Expr::Sockstate(sock) => alloc::format!("SOCKSTATE({})", format_expr(sock)),
     }
 }

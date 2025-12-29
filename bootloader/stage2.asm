@@ -10,7 +10,7 @@ KERNEL_ADDR         equ 0x100000    ; Load kernel at 1MB
 ; Kernel loading - use multiple small reads to avoid BIOS issues
 ; Each track has 18 sectors, reading within track boundaries is safest
 KERNEL_LOAD_SEG     equ 0x1000      ; Load to 0x10000
-KERNEL_SECTORS      equ 400         ; ~200KB max (kernel + exec table + programs)
+KERNEL_SECTORS      equ 450         ; ~225KB max (kernel + exec table + programs)
 
 ; Page table locations (must be 4KB aligned)
 PML4_ADDR           equ 0x1000

@@ -22,8 +22,8 @@ QEMU            = qemu-system-x86_64
 PYTHON          = python3
 
 # Kernel size limit (must match KERNEL_SECTORS in stage2.asm)
-# 400 sectors * 512 bytes = 204800 bytes (includes kernel + exec table + programs)
-MAX_KERNEL_SIZE = 204800
+# 450 sectors * 512 bytes = 230400 bytes (includes kernel + exec table + programs)
+MAX_KERNEL_SIZE = 230400
 
 # Default target
 all: image

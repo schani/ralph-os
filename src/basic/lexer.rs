@@ -24,6 +24,26 @@ pub enum Token {
     Mem,
     Spawn,
     Memstats,
+    // String functions
+    Chr,
+    Asc,
+    Len,
+    Mid,
+    Left,
+    Instr,
+    // Control flow
+    Gosub,
+    Return,
+    // Arrays
+    Dim,
+    // Network
+    Socket,
+    NetListen,
+    Accept,
+    Recv,
+    Send,
+    Close,
+    Sockstate,
 
     // Operators
     Plus,
@@ -239,6 +259,26 @@ impl<'a> Lexer<'a> {
             "MEM" => Token::Mem,
             "SPAWN" => Token::Spawn,
             "MEMSTATS" => Token::Memstats,
+            // String functions (with and without $ suffix)
+            "CHR" | "CHR$" => Token::Chr,
+            "ASC" => Token::Asc,
+            "LEN" => Token::Len,
+            "MID" | "MID$" => Token::Mid,
+            "LEFT" | "LEFT$" => Token::Left,
+            "INSTR" => Token::Instr,
+            "RECV" | "RECV$" => Token::Recv,
+            // Control flow
+            "GOSUB" => Token::Gosub,
+            "RETURN" => Token::Return,
+            // Arrays
+            "DIM" => Token::Dim,
+            // Network
+            "SOCKET" => Token::Socket,
+            "LISTEN" => Token::NetListen,
+            "ACCEPT" => Token::Accept,
+            "SEND" => Token::Send,
+            "CLOSE" => Token::Close,
+            "SOCKSTATE" => Token::Sockstate,
             _ => Token::Identifier(s.to_ascii_uppercase()),
         }
     }

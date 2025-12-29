@@ -277,3 +277,44 @@ pub fn memstats_task() {
 pub fn repl_task() {
     run_repl();
 }
+
+/// HTTP Hello World server task (headless BASIC program)
+pub fn http_server_task() {
+    let program = r#"
+10 PRINT "HTTP server starting"
+20 S = SOCKET()
+30 PRINT "Socket: "; S
+40 IF S < 0 THEN 900
+50 L = LISTEN(S, 8080)
+60 PRINT "Listen result: "; L
+70 IF L = 0 THEN 910
+80 PRINT "Listening on port 8080"
+90 CR$ = CHR$(13)
+100 LF$ = CHR$(10)
+110 CRLF$ = CR$ + LF$
+120 BODY$ = "<h1>Hello from Ralph OS!</h1>"
+130 RESP$ = "HTTP/1.0 200 OK" + CRLF$ + CRLF$ + BODY$
+140 PRINT "Ready to accept connections"
+
+200 C = ACCEPT(S)
+210 IF C >= 0 THEN 220
+215 SLEEP 50
+216 GOTO 200
+220 PRINT "Client connected: "; C
+
+300 R$ = RECV$(C)
+310 IF R$ = "" THEN 315
+312 GOTO 320
+315 SLEEP 10
+316 GOTO 300
+320 PRINT "Got request"
+330 SEND C, RESP$
+340 CLOSE C
+350 PRINT "Response sent"
+360 GOTO 200
+
+900 PRINT "Socket failed"
+910 END
+"#;
+    run_headless(program);
+}

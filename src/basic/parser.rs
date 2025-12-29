@@ -26,6 +26,33 @@ pub enum Expr {
     Negate(Box<Expr>),
     /// MEM(n) function call
     Mem(Box<Expr>),
+    // String functions
+    /// CHR$(n) - character from ASCII code
+    Chr(Box<Expr>),
+    /// ASC(s$) - ASCII code of first character
+    Asc(Box<Expr>),
+    /// LEN(s$) - string length
+    Len(Box<Expr>),
+    /// MID$(s$, start, len) - substring
+    Mid(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// LEFT$(s$, n) - first n characters
+    Left(Box<Expr>, Box<Expr>),
+    /// INSTR(haystack$, needle$) - find substring
+    Instr(Box<Expr>, Box<Expr>),
+    // Network functions
+    /// SOCKET() - create socket
+    Socket,
+    /// LISTEN(sock, port) - listen on port
+    Listen(Box<Expr>, Box<Expr>),
+    /// ACCEPT(sock) - accept connection
+    Accept(Box<Expr>),
+    /// RECV$(sock) - receive data
+    Recv(Box<Expr>),
+    /// SOCKSTATE(sock) - get socket state
+    Sockstate(Box<Expr>),
+    // Array access
+    /// Array element access: ARR(index)
+    ArrayAccess { name: String, index: Box<Expr> },
 }
 
 /// Binary operators
@@ -80,6 +107,18 @@ pub enum Statement {
     End,
     /// SPAWN "program_name" [, "arg1", "arg2", ...]
     Spawn(String, Vec<String>),
+    /// GOSUB linenum
+    Gosub(u32),
+    /// RETURN
+    Return,
+    /// DIM name(size)
+    Dim { name: String, size: Expr },
+    /// Array assignment: ARR(index) = value
+    ArrayAssign { name: String, index: Expr, value: Expr },
+    /// SEND sock, data$
+    Send { sock: Expr, data: Expr },
+    /// CLOSE sock
+    NetClose(Expr),
 }
 
 /// Parse error
@@ -148,6 +187,14 @@ impl<'a> Parser<'a> {
             Token::Next => self.parse_next(),
             Token::Sleep => self.parse_sleep(),
             Token::Spawn => self.parse_spawn(),
+            Token::Gosub => self.parse_gosub(),
+            Token::Return => {
+                self.advance();
+                Ok(Statement::Return)
+            }
+            Token::Dim => self.parse_dim(),
+            Token::Send => self.parse_send(),
+            Token::Close => self.parse_close(),
             Token::Rem => {
                 self.advance();
                 self.lexer.skip_to_eol();
@@ -160,9 +207,27 @@ impl<'a> Parser<'a> {
                 Ok(Statement::End)
             }
             Token::Identifier(name) => {
-                // Implicit LET: X = 5
+                // Could be implicit LET (X = 5) or array assignment (ARR(I) = 5)
                 let var = name.clone();
                 self.advance();
+
+                // Check for array assignment: ARR(index) = value
+                if self.current == Token::LParen {
+                    self.advance();
+                    let index = self.parse_expression()?;
+                    if self.current != Token::RParen {
+                        return Err(ParseError("Expected ')' after array index".into()));
+                    }
+                    self.advance();
+                    if self.current != Token::Eq {
+                        return Err(ParseError("Expected '=' after array element".into()));
+                    }
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    return Ok(Statement::ArrayAssign { name: var, index, value });
+                }
+
+                // Simple variable assignment
                 if self.current == Token::Eq {
                     self.advance();
                     let value = self.parse_expression()?;
@@ -340,6 +405,63 @@ impl<'a> Parser<'a> {
         Ok(Statement::Spawn(name, args))
     }
 
+    fn parse_gosub(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume GOSUB
+
+        let line = match &self.current {
+            Token::Integer(n) => *n as u32,
+            _ => return Err(ParseError("Expected line number after GOSUB".into())),
+        };
+        self.advance();
+
+        Ok(Statement::Gosub(line))
+    }
+
+    fn parse_dim(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume DIM
+
+        let name = match &self.current {
+            Token::Identifier(n) => n.clone(),
+            _ => return Err(ParseError("Expected array name after DIM".into())),
+        };
+        self.advance();
+
+        if self.current != Token::LParen {
+            return Err(ParseError("Expected '(' after array name".into()));
+        }
+        self.advance();
+
+        let size = self.parse_expression()?;
+
+        if self.current != Token::RParen {
+            return Err(ParseError("Expected ')' after array size".into()));
+        }
+        self.advance();
+
+        Ok(Statement::Dim { name, size })
+    }
+
+    fn parse_send(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume SEND
+
+        let sock = self.parse_expression()?;
+
+        if self.current != Token::Comma {
+            return Err(ParseError("Expected ',' after socket in SEND".into()));
+        }
+        self.advance();
+
+        let data = self.parse_expression()?;
+
+        Ok(Statement::Send { sock, data })
+    }
+
+    fn parse_close(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume CLOSE
+        let sock = self.parse_expression()?;
+        Ok(Statement::NetClose(sock))
+    }
+
     /// Parse expression with operator precedence
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
         self.parse_comparison()
@@ -436,6 +558,16 @@ impl<'a> Parser<'a> {
             Token::Identifier(name) => {
                 let name = name.clone();
                 self.advance();
+                // Check for array access: name(index)
+                if self.current == Token::LParen {
+                    self.advance();
+                    let index = self.parse_expression()?;
+                    if self.current != Token::RParen {
+                        return Err(ParseError("Expected ')' after array index".into()));
+                    }
+                    self.advance();
+                    return Ok(Expr::ArrayAccess { name, index: Box::new(index) });
+                }
                 Ok(Expr::Variable(name))
             }
             Token::Mem => {
@@ -450,6 +582,175 @@ impl<'a> Parser<'a> {
                 }
                 self.advance();
                 Ok(Expr::Mem(Box::new(arg)))
+            }
+            // String functions
+            Token::Chr => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after CHR$".into()));
+                }
+                self.advance();
+                let arg = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')'".into()));
+                }
+                self.advance();
+                Ok(Expr::Chr(Box::new(arg)))
+            }
+            Token::Asc => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after ASC".into()));
+                }
+                self.advance();
+                let arg = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')'".into()));
+                }
+                self.advance();
+                Ok(Expr::Asc(Box::new(arg)))
+            }
+            Token::Len => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after LEN".into()));
+                }
+                self.advance();
+                let arg = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')'".into()));
+                }
+                self.advance();
+                Ok(Expr::Len(Box::new(arg)))
+            }
+            Token::Mid => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after MID$".into()));
+                }
+                self.advance();
+                let s = self.parse_expression()?;
+                if self.current != Token::Comma {
+                    return Err(ParseError("Expected ',' in MID$".into()));
+                }
+                self.advance();
+                let start = self.parse_expression()?;
+                if self.current != Token::Comma {
+                    return Err(ParseError("Expected ',' in MID$".into()));
+                }
+                self.advance();
+                let len = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after MID$".into()));
+                }
+                self.advance();
+                Ok(Expr::Mid(Box::new(s), Box::new(start), Box::new(len)))
+            }
+            Token::Left => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after LEFT$".into()));
+                }
+                self.advance();
+                let s = self.parse_expression()?;
+                if self.current != Token::Comma {
+                    return Err(ParseError("Expected ',' in LEFT$".into()));
+                }
+                self.advance();
+                let n = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after LEFT$".into()));
+                }
+                self.advance();
+                Ok(Expr::Left(Box::new(s), Box::new(n)))
+            }
+            Token::Instr => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after INSTR".into()));
+                }
+                self.advance();
+                let haystack = self.parse_expression()?;
+                if self.current != Token::Comma {
+                    return Err(ParseError("Expected ',' in INSTR".into()));
+                }
+                self.advance();
+                let needle = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after INSTR".into()));
+                }
+                self.advance();
+                Ok(Expr::Instr(Box::new(haystack), Box::new(needle)))
+            }
+            // Network functions
+            Token::Socket => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after SOCKET".into()));
+                }
+                self.advance();
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after SOCKET".into()));
+                }
+                self.advance();
+                Ok(Expr::Socket)
+            }
+            Token::NetListen => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after LISTEN".into()));
+                }
+                self.advance();
+                let sock = self.parse_expression()?;
+                if self.current != Token::Comma {
+                    return Err(ParseError("Expected ',' in LISTEN".into()));
+                }
+                self.advance();
+                let port = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after LISTEN".into()));
+                }
+                self.advance();
+                Ok(Expr::Listen(Box::new(sock), Box::new(port)))
+            }
+            Token::Accept => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after ACCEPT".into()));
+                }
+                self.advance();
+                let sock = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after ACCEPT".into()));
+                }
+                self.advance();
+                Ok(Expr::Accept(Box::new(sock)))
+            }
+            Token::Recv => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after RECV$".into()));
+                }
+                self.advance();
+                let sock = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after RECV$".into()));
+                }
+                self.advance();
+                Ok(Expr::Recv(Box::new(sock)))
+            }
+            Token::Sockstate => {
+                self.advance();
+                if self.current != Token::LParen {
+                    return Err(ParseError("Expected '(' after SOCKSTATE".into()));
+                }
+                self.advance();
+                let sock = self.parse_expression()?;
+                if self.current != Token::RParen {
+                    return Err(ParseError("Expected ')' after SOCKSTATE".into()));
+                }
+                self.advance();
+                Ok(Expr::Sockstate(Box::new(sock)))
             }
             Token::LParen => {
                 self.advance();
