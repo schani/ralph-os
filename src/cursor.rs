@@ -1,9 +1,9 @@
 //! Mouse Cursor and Tooltip
 //!
 //! Handles cursor sprite rendering and memory info tooltip display.
-//! Queries actual allocator data structures to show real allocation boundaries.
+//! Uses the meminfo API to query memory region information.
 
-use crate::{vga, font, mouse, memvis, allocator, program_alloc, executable, gilbert};
+use crate::{vga, font, mouse, memvis, meminfo, gilbert};
 use crate::vga::colors;
 
 /// Cursor sprite size
@@ -43,12 +43,6 @@ const TOOLTIP_PADDING: usize = 2;
 /// Bytes per pixel (must match memvis.rs)
 const BYTES_PER_PIXEL: usize = 256;
 
-/// Memory region boundaries (must match memvis.rs)
-const VIS_BASE: usize = 0x100000;
-const KERNEL_END: usize = 0x200000;
-const HEAP_END: usize = 0x400000;
-const PROGRAM_END: usize = 0x1000000;
-
 /// Draw cursor sprite at position
 fn draw_cursor_sprite(x: i16, y: i16) {
     if x < 0 || y < 0 {
@@ -79,7 +73,7 @@ fn draw_cursor_sprite(x: i16, y: i16) {
 /// Convert pixel position to memory address using Gilbert curve
 fn pixel_to_addr(x: i16, y: i16) -> usize {
     if x < 0 || y < 0 {
-        return VIS_BASE;
+        return meminfo::KERNEL_START;
     }
 
     let x = x as usize;
@@ -87,109 +81,12 @@ fn pixel_to_addr(x: i16, y: i16) -> usize {
 
     // Handle cursor in unused bottom 8 rows (y >= 192)
     if x >= gilbert::WIDTH || y >= gilbert::HEIGHT {
-        return PROGRAM_END; // Beyond visualized memory
+        return meminfo::PROGRAM_END; // Beyond visualized memory
     }
 
     // Use Gilbert curve to convert (x, y) to curve index
     let d = gilbert::xy_to_d(x, y);
-    VIS_BASE + (d << 8) // * 256 bytes per pixel
-}
-
-/// Memory region info returned by find_memory_region
-struct MemoryRegionInfo {
-    start: usize,
-    end: usize,
-    region_name: &'static str,
-    is_allocated: bool,
-}
-
-/// Find the memory region that contains the given address.
-/// Queries actual allocator data structures, not pixels.
-fn find_memory_region(addr: usize) -> MemoryRegionInfo {
-    // Kernel region: 0x100000 - 0x200000 (always "allocated")
-    if addr < KERNEL_END {
-        return MemoryRegionInfo {
-            start: VIS_BASE,
-            end: KERNEL_END,
-            region_name: "Kernel",
-            is_allocated: true,
-        };
-    }
-
-    // Heap region: 0x200000 - 0x400000
-    if addr < HEAP_END {
-        // Check if it's an allocation
-        if let Some((start, end)) = allocator::find_allocation(addr) {
-            return MemoryRegionInfo {
-                start,
-                end,
-                region_name: "Heap",
-                is_allocated: true,
-            };
-        }
-        // Check if it's a free region
-        if let Some((start, end)) = allocator::find_free_region(addr) {
-            return MemoryRegionInfo {
-                start,
-                end,
-                region_name: "Heap",
-                is_allocated: false,
-            };
-        }
-        // Fallback (shouldn't happen)
-        return MemoryRegionInfo {
-            start: KERNEL_END,
-            end: HEAP_END,
-            region_name: "Heap",
-            is_allocated: false,
-        };
-    }
-
-    // Program region: 0x400000 - 0x1000000
-    if addr < PROGRAM_END {
-        // First check if it's a known program (has a name)
-        if let Some((start, end, name)) = executable::find_program_by_addr(addr) {
-            return MemoryRegionInfo {
-                start,
-                end,
-                region_name: name,
-                is_allocated: true,
-            };
-        }
-        // Check if it's an allocation (stack or heap block without program name)
-        if let Some((start, end)) = program_alloc::find_allocation(addr) {
-            return MemoryRegionInfo {
-                start,
-                end,
-                region_name: "Stack",
-                is_allocated: true,
-            };
-        }
-        // Check if it's a free region
-        if let Some((start, end)) = program_alloc::find_free_region(addr) {
-            return MemoryRegionInfo {
-                start,
-                end,
-                region_name: "Program",
-                is_allocated: false,
-            };
-        }
-        // Fallback (shouldn't happen)
-        return MemoryRegionInfo {
-            start: HEAP_END,
-            end: PROGRAM_END,
-            region_name: "Program",
-            is_allocated: false,
-        };
-    }
-
-    // Beyond visualized region
-    MemoryRegionInfo {
-        start: addr,
-        end: addr + BYTES_PER_PIXEL,
-        region_name: "Unknown",
-        is_allocated: false,
-    }
+    meminfo::KERNEL_START + (d << 8) // * 256 bytes per pixel
 }
 
 
@@ -266,9 +163,9 @@ pub fn update() {
     // Get cursor position
     let (x, y) = mouse::position();
 
-    // Get memory info by querying the actual allocators
+    // Get memory info using the unified meminfo API
     let addr = pixel_to_addr(x, y);
-    let region_info = find_memory_region(addr);
+    let region_info = meminfo::find_region(addr);
 
     // Redraw the entire memory visualization
     memvis::redraw();
@@ -298,9 +195,9 @@ pub fn init() {
 
     let (x, y) = mouse::position();
 
-    // Get memory info by querying the actual allocators
+    // Get memory info using the unified meminfo API
     let addr = pixel_to_addr(x, y);
-    let region_info = find_memory_region(addr);
+    let region_info = meminfo::find_region(addr);
 
     // Draw cursor
     draw_cursor_sprite(x, y);

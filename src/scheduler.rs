@@ -356,3 +356,25 @@ pub fn current_task_id() -> Option<TaskId> {
         }
     })
 }
+
+/// Information about a task (for MEMSTATS)
+#[derive(Debug)]
+pub struct TaskInfo {
+    /// Task ID
+    pub id: TaskId,
+    /// Task name
+    pub name: &'static str,
+    /// Current state
+    pub state: TaskState,
+}
+
+/// Get information about all tasks
+pub fn get_all_tasks() -> Vec<TaskInfo> {
+    SCHEDULER.with(|sched| {
+        sched.tasks.iter().map(|t| TaskInfo {
+            id: t.id,
+            name: t.name,
+            state: t.state,
+        }).collect()
+    })
+}

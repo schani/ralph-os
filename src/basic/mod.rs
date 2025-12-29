@@ -16,6 +16,64 @@ pub use lexer::Token;
 use alloc::string::String;
 use crate::scheduler;
 use crate::serial;
+use crate::meminfo;
+
+/// Print detailed memory statistics using the unified meminfo API
+fn print_memstats() {
+    crate::println!("=== MEMORY MAP ===");
+    crate::println!();
+
+    // Print region statistics
+    for region in meminfo::get_region_stats() {
+        let total_kb = (region.end - region.start) / 1024;
+        crate::println!("{}: 0x{:X} - 0x{:X} ({} KB)",
+            region.name, region.start, region.end, total_kb);
+        crate::println!("  Used: {} bytes", region.used);
+        crate::println!("  Free: {} bytes", region.free);
+        crate::println!();
+    }
+
+    // Per-task breakdown
+    let tasks = meminfo::get_task_memory_info();
+
+    if tasks.is_empty() {
+        crate::println!("No tasks running.");
+    } else {
+        crate::println!("TASKS ({}):", tasks.len());
+        for task in &tasks {
+            let state_str = match task.state {
+                crate::task::TaskState::Ready => "ready",
+                crate::task::TaskState::Running => "running",
+                crate::task::TaskState::Sleeping => "sleeping",
+                crate::task::TaskState::Finished => "finished",
+            };
+            crate::println!();
+            crate::println!("  [{}] {} ({})", task.id, task.name, state_str);
+
+            // Stack
+            if let Some((stack_base, stack_size)) = task.stack {
+                crate::println!("    Stack: 0x{:X} - 0x{:X} ({} KB)",
+                    stack_base, stack_base + stack_size, stack_size / 1024);
+            }
+
+            // Program code (if loaded ELF)
+            if let Some((prog_base, prog_size, ref prog_name)) = task.program {
+                crate::println!("    Code:  0x{:X} - 0x{:X} ({} KB) [{}]",
+                    prog_base, prog_base + prog_size, prog_size / 1024, prog_name);
+            }
+
+            // Heap blocks
+            if !task.heap_blocks.is_empty() {
+                crate::println!("    Heap blocks: {}", task.heap_blocks.len());
+                for (addr, size) in &task.heap_blocks {
+                    crate::println!("      0x{:X} - 0x{:X} ({} bytes)",
+                        addr, addr + size, size);
+                }
+            }
+        }
+    }
+    crate::println!();
+}
 
 /// Run a BASIC program headlessly (for background tasks)
 pub fn run_headless(source: &str) {
@@ -148,6 +206,10 @@ pub fn run_repl() {
             Token::New => {
                 interp.clear();
                 crate::println!("Program cleared");
+                continue;
+            }
+            Token::Memstats => {
+                print_memstats();
                 continue;
             }
             _ => {}

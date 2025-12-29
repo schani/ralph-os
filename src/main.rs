@@ -16,6 +16,7 @@ mod gilbert;
 mod idt;
 mod interrupts;
 mod io;
+mod meminfo;
 mod mouse;
 mod net;
 mod pic;

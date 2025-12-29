@@ -474,6 +474,40 @@ pub fn memory_stats() -> (usize, usize) {
     program_alloc::stats()
 }
 
+/// Information about a task's memory allocations (for MEMSTATS)
+#[derive(Debug)]
+pub struct TaskMemoryInfo {
+    /// Task ID
+    pub task_id: TaskId,
+    /// Stack allocation (base, size)
+    pub stack: (usize, usize),
+    /// Program allocation if any (base, size, name)
+    pub program: Option<(usize, usize, String)>,
+    /// Heap blocks (list of (addr, size))
+    pub heap_blocks: Vec<(usize, usize)>,
+}
+
+/// Get memory allocations for all tasks
+///
+/// Returns a vector of TaskMemoryInfo for all registered tasks.
+pub fn get_all_task_memory() -> Vec<TaskMemoryInfo> {
+    if !REGISTRY.is_initialized() {
+        return Vec::new();
+    }
+
+    REGISTRY.with(|reg| {
+        reg.task_allocations
+            .iter()
+            .map(|(&task_id, allocs)| TaskMemoryInfo {
+                task_id,
+                stack: allocs.stack,
+                program: allocs.program.clone(),
+                heap_blocks: allocs.heap_blocks.clone(),
+            })
+            .collect()
+    })
+}
+
 /// Find the program that owns a given address
 ///
 /// Returns Some((start, end, name)) if the address is in a loaded program's memory,
