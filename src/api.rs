@@ -253,7 +253,7 @@ pub fn spawn_program(name: &'static str, extra_args: &[&str]) -> Result<TaskId, 
         .ok_or(executable::ExecError::AllocationFailed)?;
 
     // Register program memory for cleanup
-    executable::register_task_program(task_id, program.base_addr, program.size);
+    executable::register_task_program(task_id, program.base_addr, program.size, name);
 
     // Allocate and set up argv in the task's memory
     let argv = allocate_args_for_task(task_id, name, extra_args)
@@ -276,7 +276,7 @@ pub fn spawn_program_dynamic(name: &str, extra_args: &[&str]) -> Result<TaskId, 
         .ok_or(executable::ExecError::AllocationFailed)?;
 
     // Register program memory for cleanup
-    executable::register_task_program(task_id, program.base_addr, program.size);
+    executable::register_task_program(task_id, program.base_addr, program.size, &program.name);
 
     // Allocate and set up argv in the task's memory
     let argv = allocate_args_for_task(task_id, name, extra_args)

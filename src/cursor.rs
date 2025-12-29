@@ -3,7 +3,7 @@
 //! Handles cursor sprite rendering and memory info tooltip display.
 //! Queries actual allocator data structures to show real allocation boundaries.
 
-use crate::{vga, font, mouse, memvis, allocator, program_alloc};
+use crate::{vga, font, mouse, memvis, allocator, program_alloc, executable};
 use crate::vga::colors;
 
 /// Cursor sprite size
@@ -134,12 +134,21 @@ fn find_memory_region(addr: usize) -> MemoryRegionInfo {
 
     // Program region: 0x400000 - 0x1000000
     if addr < PROGRAM_END {
-        // Check if it's an allocation
+        // First check if it's a known program (has a name)
+        if let Some((start, end, name)) = executable::find_program_by_addr(addr) {
+            return MemoryRegionInfo {
+                start,
+                end,
+                region_name: name,
+                is_allocated: true,
+            };
+        }
+        // Check if it's an allocation (stack or heap block without program name)
         if let Some((start, end)) = program_alloc::find_allocation(addr) {
             return MemoryRegionInfo {
                 start,
                 end,
-                region_name: "Program",
+                region_name: "Stack",
                 is_allocated: true,
             };
         }

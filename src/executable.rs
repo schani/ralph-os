@@ -89,7 +89,8 @@ struct TaskAllocations {
     /// Stack allocation (base, size) - always present
     stack: (usize, usize),
     /// Program code/data allocation - only for loaded ELF programs
-    program: Option<(usize, usize)>,
+    /// Tuple is (base_addr, size, program_name)
+    program: Option<(usize, usize, String)>,
     /// User heap allocations via alloc() API - list of (addr, size)
     heap_blocks: Vec<(usize, usize)>,
 }
@@ -375,10 +376,10 @@ pub fn register_task_stack(task_id: TaskId, stack_base: usize, stack_size: usize
 /// Register a task's program memory (for loaded ELF programs)
 ///
 /// Called after loading an ELF executable for a task.
-pub fn register_task_program(task_id: TaskId, base_addr: usize, size: usize) {
+pub fn register_task_program(task_id: TaskId, base_addr: usize, size: usize, name: &str) {
     REGISTRY.with(|reg| {
         if let Some(allocs) = reg.task_allocations.get_mut(&task_id) {
-            allocs.program = Some((base_addr, size));
+            allocs.program = Some((base_addr, size, String::from(name)));
         }
     });
 }
@@ -447,12 +448,13 @@ pub fn unload_task(task_id: TaskId) {
             }
 
             // Free program memory if any
-            if let Some((addr, size)) = allocs.program {
+            if let Some((addr, size, ref name)) = allocs.program {
                 unsafe {
                     program_alloc::deallocate(addr, size);
                 }
                 crate::println!(
-                    "Unloaded program at 0x{:X} (task {})",
+                    "Unloaded '{}' at 0x{:X} (task {})",
+                    name,
                     addr,
                     task_id
                 );
@@ -470,4 +472,31 @@ pub fn unload_task(task_id: TaskId) {
 /// Get program memory statistics
 pub fn memory_stats() -> (usize, usize) {
     program_alloc::stats()
+}
+
+/// Find the program that owns a given address
+///
+/// Returns Some((start, end, name)) if the address is in a loaded program's memory,
+/// or None if not found.
+pub fn find_program_by_addr(addr: usize) -> Option<(usize, usize, &'static str)> {
+    if !REGISTRY.is_initialized() {
+        return None;
+    }
+
+    REGISTRY.with(|reg| {
+        for allocs in reg.task_allocations.values() {
+            if let Some((base, size, ref name)) = allocs.program {
+                if addr >= base && addr < base + size {
+                    // Safety: We leak the string to get a 'static lifetime
+                    // This is acceptable because program names are small and
+                    // programs don't unload frequently
+                    let name_static: &'static str = unsafe {
+                        &*(name.as_str() as *const str)
+                    };
+                    return Some((base, base + size, name_static));
+                }
+            }
+        }
+        None
+    })
 }
