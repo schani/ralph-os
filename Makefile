@@ -1,4 +1,4 @@
-.PHONY: all build run run-net debug clean setup help bootloader kernel image programs
+.PHONY: all build run run-net run-vga-mouse-net debug clean setup help bootloader kernel image programs
 
 # Output files
 BUILD_DIR       = target
@@ -158,7 +158,7 @@ run-net: image
 		-serial stdio \
 		-display none \
 		-no-reboot \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::8080-:8080 \
 		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 
 # Run with TAP networking for ping testing (requires sudo)
@@ -198,6 +198,19 @@ run-vga-mouse: image
 		-device VGA \
 		-machine pc,i8042=on \
 		-no-reboot
+
+# Run with VGA, mouse, and networking
+run-vga-mouse-net: image
+	@/bin/bash -c "echo -ne '\x01'" | dd of=$(OS_IMAGE) bs=1 seek=$(VGA_FLAG_OFFSET) conv=notrunc 2>/dev/null
+	$(QEMU) \
+		-drive format=raw,file=$(OS_IMAGE) \
+		-serial stdio \
+		-display $(QEMU_DISPLAY) \
+		-device VGA \
+		-machine pc,i8042=on \
+		-no-reboot \
+		-netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 
 # Test VGA visualization with automated screenshot
 test-vga: image
@@ -271,6 +284,7 @@ help:
 	@echo "  run-net-tap - Run with TAP networking (requires sudo, enables ping)"
 	@echo "  run-vga     - Run with VGA memory visualization"
 	@echo "  run-vga-mouse - Run with VGA + mouse pointer and tooltip"
+	@echo "  run-vga-mouse-net - Run with VGA + mouse + networking (port 8080)"
 	@echo "  test-vga    - Test VGA visualization with automated screenshot"
 	@echo "  debug       - Run with QEMU interrupt logging"
 	@echo "  gdb         - Run with GDB server on port 1234"
