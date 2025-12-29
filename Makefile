@@ -27,12 +27,16 @@ PYTHON          = python3
 # Use rustup to run cargo with nightly toolchain
 # Set RUSTC explicitly to avoid Homebrew rustc in PATH taking precedence
 CARGO          ?= RUSTC="$$(rustup which --toolchain nightly rustc)" rustup run nightly cargo
-# macOS uses 'stat -f %z', Linux uses 'stat -c %s'
+# Platform-specific settings
 UNAME_S         := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
+    # macOS
     STAT_SIZE   = stat -f %z
+    QEMU_DISPLAY = cocoa
 else
+    # Linux
     STAT_SIZE   = stat -c %s
+    QEMU_DISPLAY = gtk
 endif
 
 # Kernel size limit (must match KERNEL_SECTORS in stage2.asm)
@@ -180,7 +184,7 @@ run-vga: image
 	$(QEMU) \
 		-drive format=raw,file=$(OS_IMAGE) \
 		-serial stdio \
-		-display gtk \
+		-display $(QEMU_DISPLAY) \
 		-device VGA \
 		-no-reboot
 
@@ -190,7 +194,7 @@ run-vga-mouse: image
 	$(QEMU) \
 		-drive format=raw,file=$(OS_IMAGE) \
 		-serial stdio \
-		-display gtk \
+		-display $(QEMU_DISPLAY) \
 		-device VGA \
 		-machine pc,i8042=on \
 		-no-reboot
