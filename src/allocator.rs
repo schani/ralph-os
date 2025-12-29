@@ -27,14 +27,19 @@ fn get_current_task_id() -> Option<TaskId> {
     }
 }
 
-/// Header placed before each allocation to track ownership
-/// Size: 16 bytes (size: 8, task_id: 8 with padding)
+/// Header placed immediately before user data in each allocation
+/// Size: 32 bytes (padded to 16-byte multiple so header is always at block_start
+/// for typical 8/16-byte alignments)
 #[repr(C)]
 struct AllocationHeader {
-    /// Size of the user data (not including header)
+    /// Start of the memory block (for returning to free list on dealloc)
+    block_start: usize,
+    /// Size of the user data (not including header or padding)
     size: usize,
     /// Task that owns this allocation (None = kernel/boot)
     task_id: Option<TaskId>,
+    /// Padding to make header 32 bytes (16-byte aligned)
+    _padding: usize,
 }
 
 const HEADER_SIZE: usize = core::mem::size_of::<AllocationHeader>();
@@ -107,10 +112,6 @@ impl LinkedListAllocator {
         let user_size = layout.size().max(1);
         let user_align = layout.align().max(core::mem::align_of::<usize>());
 
-        // Total size needed: header + padding for alignment + user data
-        // We'll allocate conservatively and adjust
-        let total_needed = HEADER_SIZE + user_align + user_size;
-
         // First-fit search
         let mut prev: Option<NonNull<FreeBlock>> = None;
         let mut current = self.head;
@@ -120,11 +121,11 @@ impl LinkedListAllocator {
             let block_start = block_ptr.as_ptr() as usize;
             let block_size = block.size;
 
-            // Calculate where the header would go
-            let header_addr = block_start;
-            // User data starts after header, aligned
-            let user_addr = Self::align_up(header_addr + HEADER_SIZE, user_align);
-            // Total space needed from block start
+            // Calculate where user data would go (aligned)
+            let user_addr = Self::align_up(block_start + HEADER_SIZE, user_align);
+            // Header goes immediately before user data
+            let header_addr = user_addr - HEADER_SIZE;
+            // Total space needed from block start to end of user data
             let total_size = (user_addr - block_start) + user_size;
 
             // Check if block is large enough
@@ -151,17 +152,18 @@ impl LinkedListAllocator {
                     self.add_free_block(new_block);
                 }
 
-                // Write the allocation header
+                // Write the allocation header (immediately before user data)
                 let header = header_addr as *mut AllocationHeader;
                 unsafe {
+                    (*header).block_start = block_start;
                     (*header).size = user_size;
                     (*header).task_id = get_current_task_id();
+                    (*header)._padding = 0;
                 }
 
-                // Notify memory visualizer of allocation (include header)
-                let alloc_start = header_addr;
-                let alloc_size = user_addr + user_size - header_addr;
-                crate::memvis::on_alloc(alloc_start, alloc_size);
+                // Notify memory visualizer of allocation (from block_start)
+                let alloc_size = used_end - block_start;
+                crate::memvis::on_alloc(block_start, alloc_size);
 
                 return user_addr as *mut u8;
             }
@@ -179,30 +181,16 @@ impl LinkedListAllocator {
     /// # Safety
     /// - ptr must have been allocated by this allocator
     /// - layout must match the original allocation
-    pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
+    pub unsafe fn deallocate(&mut self, ptr: *mut u8, _layout: Layout) {
         let user_addr = ptr as usize;
-        let user_align = layout.align().max(core::mem::align_of::<usize>());
 
-        // Find the header (it's before the user data, aligned)
-        // Header is at: user_addr - padding - HEADER_SIZE
-        // But we stored size in header, so we can find it by scanning back
-        // Actually, header is at the aligned position before user data
-        let header_addr = user_addr - HEADER_SIZE;
-        // But user_addr might have extra alignment padding, so we need to find
-        // where the header actually is. Since we aligned user_addr up from
-        // header_addr + HEADER_SIZE, we can compute:
-        // The header is at the start of the allocation block
-
-        // Actually, let's recalculate: header is right before user data
-        // with potential alignment gap. We need to find where header starts.
-        // For simplicity, assume header is at user_addr - HEADER_SIZE
-        // This works if HEADER_SIZE is aligned, which it is (16 bytes)
+        // Header is immediately before user data
         let header = (user_addr - HEADER_SIZE) as *mut AllocationHeader;
+        let block_start = (*header).block_start;
         let user_size = (*header).size;
 
-        // Calculate total block size (header + user data)
-        let block_start = header as usize;
-        let block_size = (user_addr - block_start) + user_size;
+        // Calculate total block size (from block_start to end of user data)
+        let block_size = (user_addr + user_size) - block_start;
 
         // Notify memory visualizer of deallocation
         crate::memvis::on_dealloc(block_start, block_size);
