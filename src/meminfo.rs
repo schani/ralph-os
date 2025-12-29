@@ -121,10 +121,16 @@ pub fn find_region(addr: usize) -> MemoryRegionInfo {
         }
         // Check if it's an allocation (stack or heap block without program name)
         if let Some((start, end)) = program_alloc::find_allocation(addr) {
+            // Find which task owns this allocation
+            let region_name = if let Some(task_id) = executable::find_task_by_program_addr(addr) {
+                get_task_name_static(Some(task_id))
+            } else {
+                "Stack"
+            };
             return MemoryRegionInfo {
                 start,
                 end,
-                region_name: "Stack",
+                region_name,
                 is_allocated: true,
             };
         }

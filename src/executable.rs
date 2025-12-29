@@ -534,3 +534,38 @@ pub fn find_program_by_addr(addr: usize) -> Option<(usize, usize, &'static str)>
         None
     })
 }
+
+/// Find which task owns a given address in the program region
+///
+/// Checks stack, program code, and heap blocks for all tasks.
+/// Returns Some(task_id) if found, None otherwise.
+pub fn find_task_by_program_addr(addr: usize) -> Option<TaskId> {
+    if !REGISTRY.is_initialized() {
+        return None;
+    }
+
+    REGISTRY.with(|reg| {
+        for (&task_id, allocs) in reg.task_allocations.iter() {
+            // Check stack
+            let (stack_base, stack_size) = allocs.stack;
+            if addr >= stack_base && addr < stack_base + stack_size {
+                return Some(task_id);
+            }
+
+            // Check program code
+            if let Some((prog_base, prog_size, _)) = &allocs.program {
+                if addr >= *prog_base && addr < *prog_base + *prog_size {
+                    return Some(task_id);
+                }
+            }
+
+            // Check heap blocks
+            for &(block_base, block_size) in &allocs.heap_blocks {
+                if addr >= block_base && addr < block_base + block_size {
+                    return Some(task_id);
+                }
+            }
+        }
+        None
+    })
+}
