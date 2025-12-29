@@ -36,7 +36,7 @@ const CURSOR_OUTLINE: [u8; 8] = [
 ];
 
 /// Tooltip dimensions
-const TOOLTIP_WIDTH: usize = 168;   // 21 chars * 8 pixels (wider for full addresses)
+const TOOLTIP_WIDTH: usize = 184;   // 23 chars * 8 pixels (for 7-digit hex addresses)
 const TOOLTIP_HEIGHT: usize = 20;   // 2 lines * 8 + 4 padding
 const TOOLTIP_PADDING: usize = 2;
 
@@ -238,10 +238,10 @@ fn draw_tooltip(x: i16, y: i16, start_addr: usize, end_addr: usize, region: &str
     let text_x = bx + TOOLTIP_PADDING + 2;
     let line1_y = by + TOOLTIP_PADDING + 1;
 
-    // Draw "0xXXXXXX-0xXXXXXX"
-    font::draw_hex_bg(text_x, line1_y, start_addr, 6, colors::WHITE, colors::DARK_GRAY);
-    font::draw_char_bg(text_x + 64, line1_y, '-', colors::WHITE, colors::DARK_GRAY);
-    font::draw_hex_bg(text_x + 72, line1_y, end_addr, 6, colors::WHITE, colors::DARK_GRAY);
+    // Draw "0xXXXXXXX-0xXXXXXXX" (7 hex digits to show up to 0x1000000)
+    font::draw_hex_bg(text_x, line1_y, start_addr, 7, colors::WHITE, colors::DARK_GRAY);
+    font::draw_char_bg(text_x + 72, line1_y, '-', colors::WHITE, colors::DARK_GRAY);
+    font::draw_hex_bg(text_x + 80, line1_y, end_addr, 7, colors::WHITE, colors::DARK_GRAY);
 
     // Line 2: Region name and state
     let line2_y = line1_y + 10;

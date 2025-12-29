@@ -128,7 +128,8 @@ pub fn init() {
 
     // Draw program region (0x400000 - 0xFFFFFF) as cyan (initially all free)
     let prog_start_d = addr_to_gilbert_index(PROGRAM_START).unwrap_or(0);
-    let prog_end_d = addr_to_gilbert_index(PROGRAM_END).unwrap_or(0);
+    // PROGRAM_END is at the boundary, use TOTAL_PIXELS directly
+    let prog_end_d = gilbert::TOTAL_PIXELS;
     fill_gilbert_range(prog_start_d, prog_end_d, colors::CYAN);
 
     crate::println!("[memvis] Gilbert curve visualization initialized");
