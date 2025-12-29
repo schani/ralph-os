@@ -298,7 +298,32 @@ unsafe impl GlobalAlloc for LockedAllocator {
     }
 }
 
-/// Simple spinlock implementation
+/// Check if interrupts are currently enabled
+fn interrupts_enabled() -> bool {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+    }
+    flags & 0x200 != 0  // IF flag is bit 9
+}
+
+/// Disable interrupts and return whether they were enabled
+fn disable_interrupts() -> bool {
+    let was_enabled = interrupts_enabled();
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
+    was_enabled
+}
+
+/// Re-enable interrupts
+fn enable_interrupts() {
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Simple spinlock implementation that disables interrupts while held
 pub struct Spinlock<T> {
     locked: core::sync::atomic::AtomicBool,
     data: core::cell::UnsafeCell<T>,
@@ -316,8 +341,11 @@ impl<T> Spinlock<T> {
     }
 
     pub fn lock(&self) -> SpinlockGuard<'_, T> {
-        // In single-threaded cooperative scheduling, contention should never occur.
-        // If it does, our invariants are violated - panic immediately rather than deadlock.
+        // Disable interrupts first to prevent interrupt handlers from trying to acquire
+        let interrupts_were_enabled = disable_interrupts();
+
+        // In single-threaded cooperative scheduling with interrupts disabled,
+        // contention should never occur.
         if self
             .locked
             .compare_exchange(
@@ -328,14 +356,22 @@ impl<T> Spinlock<T> {
             )
             .is_err()
         {
-            panic!("Allocator lock contention - cooperative scheduling invariant violated!");
+            // Re-enable interrupts before panicking
+            if interrupts_were_enabled {
+                enable_interrupts();
+            }
+            panic!("Allocator lock contention - this should never happen!");
         }
-        SpinlockGuard { lock: self }
+        SpinlockGuard {
+            lock: self,
+            interrupts_were_enabled,
+        }
     }
 }
 
 pub struct SpinlockGuard<'a, T> {
     lock: &'a Spinlock<T>,
+    interrupts_were_enabled: bool,
 }
 
 impl<T> core::ops::Deref for SpinlockGuard<'_, T> {
@@ -356,6 +392,11 @@ impl<T> Drop for SpinlockGuard<'_, T> {
         self.lock
             .locked
             .store(false, core::sync::atomic::Ordering::Release);
+
+        // Restore interrupt state
+        if self.interrupts_were_enabled {
+            enable_interrupts();
+        }
     }
 }
 
