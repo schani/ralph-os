@@ -2,9 +2,30 @@
 //!
 //! A simple first-fit linked list allocator implemented from scratch.
 //! Supports allocation and deallocation with proper alignment handling.
+//! Tracks allocations per-task for memory visualization.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicBool, Ordering};
+use crate::task::TaskId;
+
+/// Flag to track whether scheduler is initialized
+/// Used to safely get current task ID (before scheduler exists, all allocs are "kernel")
+static SCHEDULER_READY: AtomicBool = AtomicBool::new(false);
+
+/// Mark the scheduler as ready (called after scheduler::init)
+pub fn mark_scheduler_ready() {
+    SCHEDULER_READY.store(true, Ordering::Release);
+}
+
+/// Get the current task ID if scheduler is running
+fn get_current_task_id() -> Option<TaskId> {
+    if SCHEDULER_READY.load(Ordering::Acquire) {
+        crate::scheduler::current_task_id()
+    } else {
+        None // Kernel/boot allocation
+    }
+}
 
 /// Minimum block size (must fit a FreeBlock header)
 const MIN_BLOCK_SIZE: usize = core::mem::size_of::<FreeBlock>();
@@ -29,11 +50,151 @@ impl FreeBlock {
     }
 }
 
+/// Maximum number of tracked allocations
+/// This limits memory overhead while allowing reasonable tracking
+const MAX_TRACKED_ALLOCATIONS: usize = 512;
+
+/// Entry for tracking an allocation with its owning task
+#[derive(Clone, Copy)]
+struct AllocationEntry {
+    /// Start address of the allocation
+    addr: usize,
+    /// Size of the allocation
+    size: usize,
+    /// Task that made this allocation (None = kernel/boot)
+    task_id: Option<TaskId>,
+}
+
+impl AllocationEntry {
+    const fn empty() -> Self {
+        AllocationEntry {
+            addr: 0,
+            size: 0,
+            task_id: None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+}
+
+/// Allocation tracker for per-task memory accounting
+struct AllocationTracker {
+    entries: [AllocationEntry; MAX_TRACKED_ALLOCATIONS],
+    count: usize,
+}
+
+impl AllocationTracker {
+    const fn new() -> Self {
+        AllocationTracker {
+            entries: [AllocationEntry::empty(); MAX_TRACKED_ALLOCATIONS],
+            count: 0,
+        }
+    }
+
+    /// Record a new allocation
+    fn record(&mut self, addr: usize, size: usize, task_id: Option<TaskId>) {
+        // Find an empty slot
+        for entry in self.entries.iter_mut() {
+            if entry.is_empty() {
+                *entry = AllocationEntry { addr, size, task_id };
+                self.count += 1;
+                return;
+            }
+        }
+        // Table full - allocation will be untracked (but still works)
+    }
+
+    /// Remove an allocation record
+    fn remove(&mut self, addr: usize) -> Option<AllocationEntry> {
+        for entry in self.entries.iter_mut() {
+            if entry.addr == addr && !entry.is_empty() {
+                let old = *entry;
+                *entry = AllocationEntry::empty();
+                self.count -= 1;
+                return Some(old);
+            }
+        }
+        None
+    }
+
+    /// Find which task owns the majority of a memory range
+    /// Returns (task_id, bytes_owned) for the task with most bytes in range
+    fn find_majority_owner(&self, range_start: usize, range_end: usize) -> Option<(Option<TaskId>, usize)> {
+        // Count bytes per task in this range
+        // Use a simple approach: track up to 8 different tasks
+        const MAX_TASKS: usize = 8;
+        let mut task_bytes: [(Option<TaskId>, usize); MAX_TASKS] = [(None, 0); MAX_TASKS];
+        let mut num_tasks = 0;
+
+        for entry in self.entries.iter() {
+            if entry.is_empty() {
+                continue;
+            }
+
+            // Calculate overlap between allocation and range
+            let alloc_start = entry.addr;
+            let alloc_end = entry.addr + entry.size;
+
+            if alloc_end <= range_start || alloc_start >= range_end {
+                continue; // No overlap
+            }
+
+            let overlap_start = alloc_start.max(range_start);
+            let overlap_end = alloc_end.min(range_end);
+            let overlap_bytes = overlap_end - overlap_start;
+
+            if overlap_bytes == 0 {
+                continue;
+            }
+
+            // Find or add this task
+            let mut found = false;
+            for (tid, bytes) in task_bytes.iter_mut().take(num_tasks) {
+                if *tid == entry.task_id {
+                    *bytes += overlap_bytes;
+                    found = true;
+                    break;
+                }
+            }
+            if !found && num_tasks < MAX_TASKS {
+                task_bytes[num_tasks] = (entry.task_id, overlap_bytes);
+                num_tasks += 1;
+            }
+        }
+
+        // Find task with most bytes
+        let mut best: Option<(Option<TaskId>, usize)> = None;
+        for (tid, bytes) in task_bytes.iter().take(num_tasks) {
+            if *bytes > 0 {
+                match best {
+                    None => best = Some((*tid, *bytes)),
+                    Some((_, best_bytes)) if *bytes > best_bytes => {
+                        best = Some((*tid, *bytes));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        best
+    }
+
+    /// Get all allocations for a specific task
+    fn get_task_allocations(&self, task_id: Option<TaskId>) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.entries.iter()
+            .filter(move |e| !e.is_empty() && e.task_id == task_id)
+            .map(|e| (e.addr, e.size))
+    }
+}
+
 /// Linked list allocator
 pub struct LinkedListAllocator {
     head: Option<NonNull<FreeBlock>>,
     heap_start: usize,
     heap_end: usize,
+    tracker: AllocationTracker,
 }
 
 // Safety: We use spinlocks to protect access in the global allocator wrapper
@@ -46,6 +207,7 @@ impl LinkedListAllocator {
             head: None,
             heap_start: 0,
             heap_end: 0,
+            tracker: AllocationTracker::new(),
         }
     }
 
@@ -120,6 +282,10 @@ impl LinkedListAllocator {
                 // Notify memory visualizer of allocation
                 crate::memvis::on_alloc(aligned_start, size);
 
+                // Track allocation with current task ID
+                let task_id = get_current_task_id();
+                self.tracker.record(aligned_start, size, task_id);
+
                 return aligned_start as *mut u8;
             }
 
@@ -139,6 +305,9 @@ impl LinkedListAllocator {
     pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
         let size = layout.size().max(MIN_BLOCK_SIZE);
         let addr = ptr as usize;
+
+        // Remove from allocation tracker
+        self.tracker.remove(addr);
 
         // Notify memory visualizer of deallocation
         crate::memvis::on_dealloc(addr, size);
@@ -411,4 +580,39 @@ pub fn find_free_region(addr: usize) -> Option<(usize, usize)> {
     }
 
     None
+}
+
+/// Find which task owns the majority of a memory range
+///
+/// Returns Some((task_id, bytes)) where task_id is the task that owns
+/// the most bytes in the given range (None = kernel/boot allocations).
+/// Returns None if no allocations overlap the range.
+pub fn find_majority_owner(range_start: usize, range_end: usize) -> Option<(Option<TaskId>, usize)> {
+    let allocator = ALLOCATOR.inner.lock();
+    allocator.tracker.find_majority_owner(range_start, range_end)
+}
+
+/// Get all heap allocations for a specific task
+///
+/// Returns a list of (start_addr, size) for all heap allocations made by the task.
+/// Use task_id = None to get kernel/boot allocations.
+pub fn get_task_heap_allocations(task_id: Option<TaskId>) -> alloc::vec::Vec<(usize, usize)> {
+    let allocator = ALLOCATOR.inner.lock();
+    allocator.tracker.get_task_allocations(task_id).collect()
+}
+
+/// Get all unique task IDs that have heap allocations
+pub fn get_tasks_with_allocations() -> alloc::vec::Vec<Option<TaskId>> {
+    let allocator = ALLOCATOR.inner.lock();
+    let mut tasks = alloc::vec::Vec::new();
+
+    for entry in allocator.tracker.entries.iter() {
+        if !entry.is_empty() {
+            if !tasks.contains(&entry.task_id) {
+                tasks.push(entry.task_id);
+            }
+        }
+    }
+
+    tasks
 }

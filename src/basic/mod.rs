@@ -62,16 +62,33 @@ fn print_memstats() {
                     prog_base, prog_base + prog_size, prog_size / 1024, prog_name);
             }
 
-            // Heap blocks
-            if !task.heap_blocks.is_empty() {
-                crate::println!("    Heap blocks: {}", task.heap_blocks.len());
-                for (addr, size) in &task.heap_blocks {
+            // Kernel heap allocations (0x200000-0x400000)
+            if !task.kernel_heap.is_empty() {
+                let total: usize = task.kernel_heap.iter().map(|(_, s)| *s).sum();
+                crate::println!("    Kernel heap: {} allocs, {} bytes total",
+                    task.kernel_heap.len(), total);
+            }
+
+            // Program heap blocks (0x400000-0x1000000)
+            if !task.program_heap.is_empty() {
+                crate::println!("    Program heap: {} blocks", task.program_heap.len());
+                for (addr, size) in &task.program_heap {
                     crate::println!("      0x{:X} - 0x{:X} ({} bytes)",
                         addr, addr + size, size);
                 }
             }
         }
     }
+
+    // Show kernel/boot allocations
+    let kernel_allocs = meminfo::get_kernel_heap_allocations();
+    if !kernel_allocs.is_empty() {
+        let total: usize = kernel_allocs.iter().map(|(_, s)| *s).sum();
+        crate::println!();
+        crate::println!("KERNEL (boot allocations):");
+        crate::println!("  Heap: {} allocs, {} bytes total", kernel_allocs.len(), total);
+    }
+
     crate::println!();
 }
 

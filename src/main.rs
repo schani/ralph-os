@@ -157,6 +157,9 @@ pub extern "C" fn kernel_main() -> ! {
         None => println!("  - basic-repl: FAILED (out of memory)"),
     }
 
+    // Mark scheduler as ready for per-task allocation tracking
+    allocator::mark_scheduler_ready();
+
     println!("\nStarting scheduler...\n");
 
     // Run scheduler (never returns)

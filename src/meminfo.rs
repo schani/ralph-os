@@ -12,6 +12,24 @@ use crate::program_alloc;
 use crate::scheduler;
 use crate::task::{TaskId, TaskState};
 
+/// Get task name as a static string (for display in tooltip)
+/// Returns "Kernel" for None (boot allocations), otherwise the task name
+fn get_task_name_static(task_id: Option<TaskId>) -> &'static str {
+    match task_id {
+        None => "Kernel",
+        Some(id) => {
+            // Look up the task name from the scheduler
+            let tasks = scheduler::get_all_tasks();
+            for task in tasks {
+                if task.id == id {
+                    return task.name;
+                }
+            }
+            "Task" // Unknown task (shouldn't happen)
+        }
+    }
+}
+
 /// Memory region boundaries
 pub const KERNEL_START: usize = 0x100000;
 pub const KERNEL_END: usize = 0x200000;
@@ -33,9 +51,13 @@ pub struct MemoryRegionInfo {
     pub is_allocated: bool,
 }
 
+/// Bytes per pixel for visualization (used for majority owner calculation)
+const BYTES_PER_PIXEL: usize = 256;
+
 /// Find the memory region that contains the given address
 ///
 /// Queries actual allocator data structures to find the exact region boundaries.
+/// For heap allocations, identifies the task that owns the majority of the pixel.
 pub fn find_region(addr: usize) -> MemoryRegionInfo {
     // Kernel region: 0x100000 - 0x200000 (always "allocated")
     if addr < KERNEL_END {
@@ -51,10 +73,20 @@ pub fn find_region(addr: usize) -> MemoryRegionInfo {
     if addr < HEAP_END {
         // Check if it's an allocation
         if let Some((start, end)) = allocator::find_allocation(addr) {
+            // Find the majority owner for this pixel
+            let pixel_start = (addr / BYTES_PER_PIXEL) * BYTES_PER_PIXEL;
+            let pixel_end = pixel_start + BYTES_PER_PIXEL;
+
+            let region_name = if let Some((task_id, _bytes)) = allocator::find_majority_owner(pixel_start, pixel_end) {
+                get_task_name_static(task_id)
+            } else {
+                "Heap"
+            };
+
             return MemoryRegionInfo {
                 start,
                 end,
-                region_name: "Heap",
+                region_name,
                 is_allocated: true,
             };
         }
@@ -183,12 +215,14 @@ pub struct TaskMemoryInfo {
     pub name: &'static str,
     /// Task state
     pub state: TaskState,
-    /// Stack allocation (base, size)
+    /// Stack allocation in program region (base, size)
     pub stack: Option<(usize, usize)>,
     /// Program code allocation (base, size, program_name)
     pub program: Option<(usize, usize, String)>,
-    /// Heap blocks allocated by this task
-    pub heap_blocks: Vec<(usize, usize)>,
+    /// Program heap blocks (in program region, via task_alloc API)
+    pub program_heap: Vec<(usize, usize)>,
+    /// Kernel heap allocations (in heap region 0x200000-0x400000)
+    pub kernel_heap: Vec<(usize, usize)>,
 }
 
 /// Get memory information for all tasks
@@ -199,8 +233,11 @@ pub fn get_task_memory_info() -> Vec<TaskMemoryInfo> {
     tasks
         .into_iter()
         .map(|task| {
-            // Find memory allocations for this task
+            // Find program region allocations for this task
             let alloc = task_allocs.iter().find(|a| a.task_id == task.id);
+
+            // Get kernel heap allocations for this task
+            let kernel_heap = allocator::get_task_heap_allocations(Some(task.id));
 
             TaskMemoryInfo {
                 id: task.id,
@@ -208,8 +245,14 @@ pub fn get_task_memory_info() -> Vec<TaskMemoryInfo> {
                 state: task.state,
                 stack: alloc.map(|a| a.stack),
                 program: alloc.and_then(|a| a.program.clone()),
-                heap_blocks: alloc.map(|a| a.heap_blocks.clone()).unwrap_or_default(),
+                program_heap: alloc.map(|a| a.heap_blocks.clone()).unwrap_or_default(),
+                kernel_heap,
             }
         })
         .collect()
+}
+
+/// Get kernel/boot heap allocations (not associated with any task)
+pub fn get_kernel_heap_allocations() -> Vec<(usize, usize)> {
+    allocator::get_task_heap_allocations(None)
 }
