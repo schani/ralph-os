@@ -443,12 +443,22 @@ fn alloc_connection() -> Option<usize> {
             }
         }
 
-        // If no free slot, reuse a TimeWait socket (RFC allows this for new connections)
+        // If no free slot, reuse a socket in closing states
+        // These states mean we're done with the connection and just waiting for TCP cleanup
         for (i, conn) in CONNECTIONS.iter_mut().enumerate() {
-            if conn.in_use && conn.state == TcpState::TimeWait {
-                conn.reset();
-                conn.in_use = true;
-                return Some(i);
+            if conn.in_use {
+                match conn.state {
+                    TcpState::TimeWait
+                    | TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::Closing
+                    | TcpState::LastAck => {
+                        conn.reset();
+                        conn.in_use = true;
+                        return Some(i);
+                    }
+                    _ => {}
+                }
             }
         }
     }
