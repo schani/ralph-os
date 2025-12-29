@@ -434,8 +434,18 @@ fn find_listener(local_port: u16) -> Option<usize> {
 /// Allocate a new connection slot
 fn alloc_connection() -> Option<usize> {
     unsafe {
+        // First, try to find a completely free slot
         for (i, conn) in CONNECTIONS.iter_mut().enumerate() {
             if !conn.in_use {
+                conn.reset();
+                conn.in_use = true;
+                return Some(i);
+            }
+        }
+
+        // If no free slot, reuse a TimeWait socket (RFC allows this for new connections)
+        for (i, conn) in CONNECTIONS.iter_mut().enumerate() {
+            if conn.in_use && conn.state == TcpState::TimeWait {
                 conn.reset();
                 conn.in_use = true;
                 return Some(i);
