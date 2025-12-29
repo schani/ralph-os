@@ -79,6 +79,7 @@ static mut IDT_PTR: IdtPointer = IdtPointer { limit: 0, base: 0 };
 // External interrupt handler stubs defined in interrupts.rs
 extern "C" {
     fn isr_timer();
+    fn isr_keyboard();
     fn isr_ne2000();
     fn isr_mouse();
     fn isr_spurious();
@@ -92,6 +93,9 @@ pub fn init() {
     unsafe {
         // Set up timer interrupt (IRQ0 -> interrupt 32 after PIC remapping)
         IDT[32] = IdtEntry::new(isr_timer as *const () as u64, KERNEL_CS, 0);
+
+        // Set up keyboard interrupt (IRQ1 -> interrupt 33)
+        IDT[33] = IdtEntry::new(isr_keyboard as *const () as u64, KERNEL_CS, 0);
 
         // Set up spurious interrupt handler (IRQ7 -> interrupt 39)
         IDT[39] = IdtEntry::new(isr_spurious as *const () as u64, KERNEL_CS, 0);

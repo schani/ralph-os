@@ -2,6 +2,7 @@
 //!
 //! Contains assembly stubs that save/restore state and call Rust handlers.
 
+use crate::io::inb;
 use crate::mouse;
 use crate::net;
 use crate::pic;
@@ -30,6 +31,18 @@ extern "C" fn spurious_handler() {
     if !pic::is_spurious(7) {
         pic::send_eoi(7);
     }
+}
+
+/// Keyboard interrupt handler (IRQ1 -> interrupt 33)
+///
+/// Just reads the scancode to clear the interrupt - we don't process keyboard input.
+#[no_mangle]
+extern "C" fn keyboard_handler() {
+    // Read scancode to clear the keyboard controller buffer
+    unsafe { let _ = inb(0x60); }
+
+    // Send End-Of-Interrupt to PIC
+    pic::send_eoi(1);
 }
 
 /// Timer ISR stub - saves state, calls handler, restores state
@@ -66,6 +79,43 @@ pub unsafe extern "C" fn isr_timer() {
         "iretq",
 
         handler = sym timer_handler,
+    );
+}
+
+/// Keyboard ISR stub - saves state, calls handler, restores state
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn isr_keyboard() {
+    core::arch::naked_asm!(
+        // Save all caller-saved registers
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+
+        // Call the Rust handler
+        "call {handler}",
+
+        // Restore registers
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+
+        // Return from interrupt
+        "iretq",
+
+        handler = sym keyboard_handler,
     );
 }
 
