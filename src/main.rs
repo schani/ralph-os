@@ -148,10 +148,6 @@ pub extern "C" fn kernel_main() -> ! {
             None => println!("  - network: FAILED (out of memory)"),
         }
     }
-    match scheduler::spawn("memstats", basic::memstats_task) {
-        Some(_) => println!("  - memstats: Memory monitor (BASIC)"),
-        None => println!("  - memstats: FAILED (out of memory)"),
-    }
     match scheduler::spawn("basic-repl", basic::repl_task) {
         Some(_) => println!("  - basic-repl: Interactive BASIC interpreter"),
         None => println!("  - basic-repl: FAILED (out of memory)"),
