@@ -15,6 +15,10 @@ PROGRAMS_DIR    = programs
 PROGRAMS        = hello
 PROGRAM_ELFS    = $(patsubst %,$(BUILD_DIR)/programs/%.elf,$(PROGRAMS))
 
+# BASIC programs (embedded as faux files)
+BASIC_DIR       = bas
+BASIC_FILES     = $(wildcard $(BASIC_DIR)/*.bas)
+
 # Tools
 NASM            = nasm
 OBJCOPY         = $(shell find ~/.rustup -name 'llvm-objcopy' 2>/dev/null | head -1)
@@ -74,9 +78,9 @@ $(BUILD_DIR)/programs/%.elf: $(PROGRAMS_DIR)/%/src/main.rs $(PROGRAMS_DIR)/%/Car
 programs: $(PROGRAM_ELFS)
 
 # Create executable table (header + concatenated ELFs)
-$(EXEC_TABLE): $(PROGRAM_ELFS)
+$(EXEC_TABLE): $(PROGRAM_ELFS) $(BASIC_FILES)
 	@echo "Creating executable table..."
-	$(PYTHON) scripts/make_exec_table.py $@ $(PROGRAM_ELFS)
+	$(PYTHON) scripts/make_exec_table.py $@ $(PROGRAM_ELFS) $(BASIC_FILES)
 
 # Create bootable disk image
 $(OS_IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(EXEC_TABLE)

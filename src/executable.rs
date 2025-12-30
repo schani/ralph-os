@@ -363,6 +363,20 @@ pub fn load(name: &str) -> Result<LoadedProgram, ExecError> {
     })
 }
 
+/// Read an embedded file's raw bytes by name.
+///
+/// The executable table is also used as a simple "faux filesystem" for
+/// non-ELF assets (e.g. BASIC `.bas` source). The caller is responsible for
+/// interpreting the returned bytes.
+pub fn read(name: &str) -> Result<&'static [u8], ExecError> {
+    if !REGISTRY.is_initialized() {
+        return Err(ExecError::NotInitialized);
+    }
+
+    let (addr, size) = find_executable(name)?;
+    Ok(unsafe { core::slice::from_raw_parts(addr as *const u8, size) })
+}
+
 /// Register a task's stack allocation
 ///
 /// Called when a task is created. Must be called before the task runs.

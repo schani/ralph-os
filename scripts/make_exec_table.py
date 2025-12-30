@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Generate executable table for Ralph OS
+Generate embedded file table for Ralph OS
 
-This script creates a binary executable table header that the kernel uses
-to find embedded executables. It also concatenates all the ELF files.
+This script creates a binary table header that the kernel uses to find
+embedded files. It concatenates all provided files, and records their
+name/offset/size in a small header.
 
-Usage: make_exec_table.py <output> <elf1> [elf2] ...
+Usage: make_exec_table.py <output> <file1> [file2] ...
 
 The output is a single binary file containing:
 - 512-byte header with magic, version, count, and entries
-- Concatenated ELF files (padded to 512-byte alignment)
+- Concatenated file blobs (padded to 512-byte alignment)
 """
 
 import sys
@@ -38,26 +39,34 @@ def make_entry(name, offset, size):
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <output> [elf1] [elf2] ...")
+        print(f"Usage: {sys.argv[0]} <output> [file1] [file2] ...")
         sys.exit(1)
 
     output_path = sys.argv[1]
-    elf_paths = sys.argv[2:]
+    file_paths = sys.argv[2:]
 
-    if len(elf_paths) > MAX_EXECUTABLES:
-        print(f"Error: Too many executables ({len(elf_paths)} > {MAX_EXECUTABLES})")
+    if len(file_paths) > MAX_EXECUTABLES:
+        print(f"Error: Too many entries ({len(file_paths)} > {MAX_EXECUTABLES})")
         sys.exit(1)
 
-    # Collect ELF info
-    elfs = []
-    for path in elf_paths:
+    # Collect file info
+    files = []
+    for path in file_paths:
         if not os.path.exists(path):
             print(f"Error: File not found: {path}")
             sys.exit(1)
 
-        name = os.path.splitext(os.path.basename(path))[0]
+        base = os.path.basename(path)
+        ext = os.path.splitext(base)[1].lower()
+
+        # Keep `.bas` extension so BASIC can request "name.bas" explicitly.
+        # For ELF executables, keep the historical behavior of stripping extension.
+        if ext == ".bas":
+            name = base
+        else:
+            name = os.path.splitext(base)[0]
         size = os.path.getsize(path)
-        elfs.append((name, path, size))
+        files.append((name, path, size))
         print(f"  {name}: {size} bytes")
 
     # Build header
@@ -74,19 +83,19 @@ def main():
     struct.pack_into('<I', header, 4, VERSION)
 
     # Count
-    struct.pack_into('<I', header, 8, len(elfs))
+    struct.pack_into('<I', header, 8, len(files))
 
     # Reserved
     struct.pack_into('<I', header, 12, 0)
 
     # Calculate offsets (relative to header start)
-    # First ELF starts right after header (512 bytes)
+    # First file starts right after header (512 bytes)
     current_offset = HEADER_SIZE
 
     entries = []
-    for name, path, size in elfs:
+    for name, path, size in files:
         entries.append((name, current_offset, size))
-        # Align next ELF to sector boundary
+        # Align next file to sector boundary
         current_offset += align_up(size, SECTOR_SIZE)
 
     # Write entries
@@ -100,10 +109,10 @@ def main():
         # Write header
         f.write(header)
 
-        # Write ELF files with padding
-        for name, path, size in elfs:
-            with open(path, 'rb') as elf:
-                data = elf.read()
+        # Write files with padding
+        for name, path, size in files:
+            with open(path, 'rb') as fp:
+                data = fp.read()
                 f.write(data)
 
                 # Pad to sector boundary
@@ -112,7 +121,7 @@ def main():
                     f.write(b'\x00' * padding)
 
     total_size = os.path.getsize(output_path)
-    print(f"Created {output_path}: {total_size} bytes ({len(elfs)} executables)")
+    print(f"Created {output_path}: {total_size} bytes ({len(files)} entries)")
 
 if __name__ == '__main__':
     main()
