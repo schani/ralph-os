@@ -40,8 +40,8 @@ else
 endif
 
 # Kernel size limit (must match KERNEL_SECTORS in stage2.asm)
-# 450 sectors * 512 bytes = 230400 bytes (includes kernel + exec table + programs)
-MAX_KERNEL_SIZE = 230400
+# 480 sectors * 512 bytes = 245760 bytes (includes kernel + exec table + programs)
+MAX_KERNEL_SIZE = 245760
 
 # All kernel sources (including nested modules)
 KERNEL_SRCS     = $(shell find src -name '*.rs')
