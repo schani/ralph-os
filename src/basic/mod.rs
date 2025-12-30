@@ -163,25 +163,10 @@ fn read_line() -> String {
 pub fn run_repl() {
     crate::println!("Ralph BASIC v1.0");
     crate::println!("Type RUN to execute, LIST to show program, NEW to clear");
+    crate::println!("Type LOAD \"name\" to load name.bas");
     crate::println!();
 
     let mut interp = Interpreter::new();
-
-    // Pre-load Fibonacci program
-    let preload = r#"
-10 REM Fibonacci sequence - first 10 numbers
-20 LET A = 0
-30 LET B = 1
-40 LET N = 0
-50 PRINT A
-60 LET T = A + B
-70 LET A = B
-80 LET B = T
-90 LET N = N + 1
-100 IF N < 10 THEN 50
-110 END
-"#;
-    interp.load_program(preload);
 
     loop {
         crate::print!("> ");
@@ -225,6 +210,17 @@ pub fn run_repl() {
                 crate::println!("Program cleared");
                 continue;
             }
+            Token::Load => {
+                match load_bas_program(&mut interp, line) {
+                    Ok(filename) => {
+                        crate::println!("Loaded {}", filename);
+                    }
+                    Err(e) => {
+                        crate::println!("Error: {}", e);
+                    }
+                }
+                continue;
+            }
             Token::Memstats => {
                 print_memstats();
                 continue;
@@ -258,6 +254,42 @@ pub fn run_repl() {
             }
         }
     }
+}
+
+fn load_bas_program(interp: &mut Interpreter, input: &str) -> Result<String, String> {
+    // Expect: LOAD <name>  OR  LOAD "name"
+    let mut parts = input.trim().splitn(2, char::is_whitespace);
+    let _cmd = parts.next().unwrap_or("");
+    let arg = parts.next().unwrap_or("").trim();
+    if arg.is_empty() {
+        return Err("Usage: LOAD \"name\"".into());
+    }
+
+    let name = if let Some(stripped) = arg.strip_prefix('"') {
+        let Some(end_quote) = stripped.find('"') else {
+            return Err("Unterminated string".into());
+        };
+        stripped[..end_quote].trim()
+    } else {
+        arg.split_whitespace().next().unwrap_or("")
+    };
+
+    if name.is_empty() {
+        return Err("Usage: LOAD \"name\"".into());
+    }
+
+    let filename = if name.to_ascii_lowercase().ends_with(".bas") {
+        name.to_string()
+    } else {
+        alloc::format!("{}.bas", name)
+    };
+
+    let bytes = crate::executable::read(&filename).map_err(|e| alloc::format!("{:?}", e))?;
+    let src = core::str::from_utf8(bytes).map_err(|_| "File is not valid UTF-8".to_string())?;
+
+    interp.clear();
+    interp.load_program(src);
+    Ok(filename)
 }
 
 /// Memory monitor task (headless BASIC program)
