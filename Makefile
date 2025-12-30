@@ -209,7 +209,7 @@ run-vga-mouse-net: image
 		-device VGA \
 		-machine pc,i8042=on \
 		-no-reboot \
-		-netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+		-netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=tcp::2323-:23 \
 		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 
 # Test VGA visualization with automated screenshot
