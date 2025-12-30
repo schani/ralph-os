@@ -156,12 +156,6 @@ pub extern "C" fn kernel_main() -> ! {
         Some(_) => println!("  - basic-repl: Interactive BASIC interpreter"),
         None => println!("  - basic-repl: FAILED (out of memory)"),
     }
-    if net::ne2000::is_initialized() {
-        match scheduler::spawn("http-server", basic::http_server_task) {
-            Some(_) => println!("  - http-server: HTTP server on port 8080 (BASIC)"),
-            None => println!("  - http-server: FAILED (out of memory)"),
-        }
-    }
 
     // Mark scheduler as ready for per-task allocation tracking
     allocator::mark_scheduler_ready();
