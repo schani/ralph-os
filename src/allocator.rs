@@ -157,9 +157,16 @@ impl LinkedListAllocator {
                     }
                 }
 
-                // Handle leftover space at the end
-                let used_end = block_start + total_size;
-                let remaining = block_size - total_size;
+                // Handle leftover space at the end.
+                //
+                // If the tail is too small to hold a FreeBlock header, we "eat" it
+                // as part of this allocation so the heap still partitions cleanly.
+                let (alloc_block_size, remaining) = if block_size - total_size >= MIN_BLOCK_SIZE {
+                    (total_size, block_size - total_size)
+                } else {
+                    (block_size, 0)
+                };
+                let used_end = block_start + alloc_block_size;
                 if remaining >= MIN_BLOCK_SIZE {
                     // Create a new free block for remaining space
                     debug_assert!(used_end % ALIGNMENT == 0);
@@ -172,11 +179,11 @@ impl LinkedListAllocator {
                 unsafe {
                     (*header).magic = HEADER_MAGIC;
                     (*header).task_id = encode_task_id(get_current_task_id());
-                    (*header).block_size = total_size;
+                    (*header).block_size = alloc_block_size;
                 }
 
                 // Notify memory visualizer of allocation (from block_start)
-                crate::memvis::on_alloc(block_start, total_size);
+                crate::memvis::on_alloc(block_start, alloc_block_size);
 
                 let user_addr = Self::align_up(block_start + HEADER_SIZE, ALIGNMENT);
                 return user_addr as *mut u8;
