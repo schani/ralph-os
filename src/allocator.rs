@@ -624,13 +624,12 @@ pub fn find_majority_owner(range_start: usize, range_end: usize) -> Option<(Opti
     best
 }
 
-/// Get all heap allocations for a specific task
+/// Snapshot heap allocations for a task into a caller-provided buffer.
 ///
-/// Returns a list of (start_addr, size) for all heap allocations made by the task.
-/// Use task_id = None to get kernel/boot allocations.
-pub fn get_task_heap_allocations(task_id: Option<TaskId>) -> alloc::vec::Vec<(usize, usize)> {
+/// Returns the number of entries written (truncates to `out.len()`).
+fn snapshot_task_heap_allocations(task_id: Option<TaskId>, out: &mut [(usize, usize)]) -> usize {
     let allocator = ALLOCATOR.inner.lock();
-    let mut result = alloc::vec::Vec::new();
+    let mut written = 0usize;
 
     // Walk through allocated regions (gaps between free blocks)
     let mut prev_end = allocator.heap_start;
@@ -662,10 +661,27 @@ pub fn get_task_heap_allocations(task_id: Option<TaskId>) -> alloc::vec::Vec<(us
         // Read header to check task ID
         let header = unsafe { &*(alloc_start as *const AllocationHeader) };
         if header.task_id == task_id {
+            if written >= out.len() {
+                break;
+            }
             // Return user-visible size, not including header
-            result.push((alloc_start + HEADER_SIZE, header.size));
+            out[written] = (alloc_start + HEADER_SIZE, header.size);
+            written += 1;
         }
     }
 
-    result
+    written
+}
+
+/// Get all heap allocations for a specific task
+///
+/// Returns a list of (start_addr, size) for all heap allocations made by the task.
+/// Use task_id = None to get kernel/boot allocations.
+pub fn get_task_heap_allocations(task_id: Option<TaskId>) -> alloc::vec::Vec<(usize, usize)> {
+    // Important: don't allocate while holding the allocator lock.
+    // Otherwise, we'd re-enter the global allocator and trigger lock contention.
+    const MAX_SNAPSHOT_ALLOCS: usize = 256;
+    let mut snapshot = [(0usize, 0usize); MAX_SNAPSHOT_ALLOCS];
+    let count = snapshot_task_heap_allocations(task_id, &mut snapshot);
+    snapshot[..count].to_vec()
 }
