@@ -31,7 +31,12 @@ Only Rust's `core` library is used. The `alloc` crate is enabled once we have a 
 ### I/O
 - **Serial output only**: COM1 (0x3F8) via UART 16550
 - **Optional graphics**: VGA mode 13h can be enabled (see `make run-vga*`)
-- **Optional telnet**: A per-connection BASIC REPL is available on TCP port 23 (forwarded by `make run-net`)
+
+### Networking
+- **NE2000 ISA NIC** driver (IRQ 10, I/O base 0x300)
+- **TCP/IP stack**: Ethernet, ARP, IPv4, ICMP, TCP - all from scratch
+- **Non-blocking sockets**: Integrates with the cooperative scheduler
+- **Telnet server**: Per-connection BASIC REPL on TCP port 23
 
 ### Bootloader
 - Custom two-stage bootloader written in assembly
@@ -219,14 +224,3 @@ ralph_os/
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
-
-## Roadmap
-
-1. ~~**Phase 1**: Hello World kernel with serial output~~ **DONE**
-2. ~~**Phase 2**: Heap allocator (linked list)~~ **DONE**
-3. ~~**Phase 3**: Cooperative multitasking scheduler~~ **DONE**
-4. ~~**Phase 4**: BASIC interpreter~~ **DONE**
-5. ~~**Phase 5**: ELF program loading~~ **DONE**
-6. ~~**Phase 6**: TCP/IP networking~~ **DONE**
-7. **Phase 7** (next): Keyboard input and interactive shell
-8. **Phase 8**: In-memory filesystem
