@@ -81,10 +81,14 @@ pub struct Task {
 /// and then marks the task as finished
 #[unsafe(naked)]
 extern "C" fn task_entry_trampoline() -> ! {
-    // R12 contains the actual task entry point
-    // We jump to it, and when it returns, we call exit_task
+    // R12 contains the actual task entry point.
+    // R13 contains an optional task argument (passed in RDI).
+    //
+    // The task entry point may be a Rust `fn()` (ignores RDI) or `fn(usize)`.
+    // We jump to it, and when it returns, we call exit_task.
     core::arch::naked_asm!(
         // Call the task entry point stored in R12
+        "mov rdi, r13",
         "call r12",
         // Task returned - call exit_task to clean up
         "call {exit_task}",
@@ -101,6 +105,14 @@ impl Task {
     ///
     /// Returns None if stack allocation fails.
     pub fn new(id: TaskId, name: &'static str, entry: fn()) -> Option<Self> {
+        Self::new_with_arg_raw(id, name, entry as usize, 0)
+    }
+
+    /// Create a new task with an entry point and an argument.
+    ///
+    /// The argument is passed in the first argument register (RDI) when the task starts.
+    /// Returns None if stack allocation fails.
+    pub fn new_with_arg_raw(id: TaskId, name: &'static str, entry: usize, arg: usize) -> Option<Self> {
         // Allocate stack from program region
         let stack_base = program_alloc::allocate(STACK_SIZE)?;
 
@@ -133,7 +145,8 @@ impl Task {
         // R12 will hold the actual entry point - the trampoline reads it
         let context = Context {
             rsp: stack_aligned as u64,
-            r12: entry as usize as u64,
+            r12: entry as u64,
+            r13: arg as u64,
             ..Default::default()
         };
 
@@ -146,5 +159,13 @@ impl Task {
             stack_size: STACK_SIZE,
             wake_at: 0,
         })
+    }
+
+    /// Create a new task with an entry point and an argument.
+    ///
+    /// The argument is passed in the first argument register (RDI) when the task starts.
+    /// Returns None if stack allocation fails.
+    pub fn new_with_arg(id: TaskId, name: &'static str, entry: fn(usize), arg: usize) -> Option<Self> {
+        Self::new_with_arg_raw(id, name, entry as usize, arg)
     }
 }

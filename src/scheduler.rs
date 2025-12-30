@@ -114,6 +114,19 @@ impl Scheduler {
         Some(id)
     }
 
+    /// Spawn a new task with an argument passed in RDI.
+    ///
+    /// Returns Some(TaskId) on success, None if stack allocation fails.
+    pub fn spawn_with_arg(&mut self, name: &'static str, entry: fn(usize), arg: usize) -> Option<TaskId> {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let task = Task::new_with_arg(id, name, entry, arg)?;
+        self.tasks.push(task);
+
+        Some(id)
+    }
+
     /// Wake any sleeping tasks whose wake time has passed
     fn wake_sleeping_tasks(&mut self) {
         let now = timer::ticks();
@@ -288,6 +301,11 @@ pub fn init() {
 /// Returns Some(TaskId) on success, None if stack allocation fails.
 pub fn spawn(name: &'static str, entry: fn()) -> Option<TaskId> {
     SCHEDULER.with(|sched| sched.spawn(name, entry))
+}
+
+/// Spawn a new task with an argument passed in RDI.
+pub fn spawn_with_arg(name: &'static str, entry: fn(usize), arg: usize) -> Option<TaskId> {
+    SCHEDULER.with(|sched| sched.spawn_with_arg(name, entry, arg))
 }
 
 /// Run the scheduler (never returns)
