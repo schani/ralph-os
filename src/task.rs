@@ -4,7 +4,7 @@ use crate::executable;
 use crate::program_alloc;
 
 /// Unique identifier for each task
-pub type TaskId = usize;
+pub type TaskId = u32;
 
 /// Stack size per task (16KB)
 pub const STACK_SIZE: usize = 16 * 1024;
