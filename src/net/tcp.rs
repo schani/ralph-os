@@ -793,7 +793,6 @@ fn process_data(conn: &mut TcpControlBlock, tcp: &TcpHeader, data: &[u8]) {
     }
 
     let seg_seq = tcp.seq_num;
-    let seg_len = payload.len() as u32;
 
     // Check if segment is in order
     if seg_seq == conn.rcv_nxt {

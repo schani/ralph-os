@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![allow(dead_code)]
+#![allow(static_mut_refs)]
 
 extern crate alloc;
 

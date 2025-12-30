@@ -8,8 +8,10 @@ pub mod lexer;
 pub mod parser;
 pub mod interpreter;
 
+#[allow(unused_imports)]
 pub use value::Value;
 pub use interpreter::{Interpreter, ExecutionStatus};
+#[allow(unused_imports)]
 pub use parser::{Parser, Statement};
 pub use lexer::Token;
 

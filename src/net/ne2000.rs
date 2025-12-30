@@ -389,7 +389,7 @@ fn receive_packets() -> usize {
             while inb(base + ISR) & ISR_RDC == 0 {}
             outb(base + ISR, ISR_RDC);
 
-            let status = (word0 & 0xFF) as u8;
+            let _status = (word0 & 0xFF) as u8;
             let next = ((word0 >> 8) & 0xFF) as u8;
             let len = word1 as usize;
 
