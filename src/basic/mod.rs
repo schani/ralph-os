@@ -95,7 +95,10 @@ fn print_memstats() {
 /// Run a BASIC program headlessly (for background tasks)
 pub fn run_headless(source: &str) {
     let mut interp = Interpreter::new();
-    interp.load_program(source);
+    if let Err(e) = interp.load_program(source) {
+        crate::println!("BASIC load error: {}", e);
+        return;
+    }
     interp.run();
 
     while interp.is_running() {
@@ -288,7 +291,10 @@ fn load_bas_program(interp: &mut Interpreter, input: &str) -> Result<String, Str
     let src = core::str::from_utf8(bytes).map_err(|_| String::from("File is not valid UTF-8"))?;
 
     interp.clear();
-    interp.load_program(src);
+    let loaded = interp.load_program(src)?;
+    if loaded == 0 {
+        return Err(String::from("Loaded 0 lines (file has no numbered program lines?)"));
+    }
     Ok(filename)
 }
 

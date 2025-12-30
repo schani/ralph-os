@@ -62,14 +62,23 @@ impl Interpreter {
     }
 
     /// Load a program from source
-    pub fn load_program(&mut self, source: &str) {
+    pub fn load_program(&mut self, source: &str) -> Result<usize, String> {
         let mut parser = Parser::new(source);
-        while let Ok(Some((line_num, stmt))) = parser.parse_line() {
-            if let Some(num) = line_num {
-                self.program.insert(num, stmt);
+        let mut loaded = 0usize;
+        loop {
+            match parser.parse_line() {
+                Ok(Some((line_num, stmt))) => {
+                    if let Some(num) = line_num {
+                        self.program.insert(num, stmt);
+                        loaded += 1;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => return Err(e.0),
             }
         }
         self.rebuild_line_order();
+        Ok(loaded)
     }
 
     /// Add or replace a line in the program

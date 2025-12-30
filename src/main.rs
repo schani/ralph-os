@@ -39,6 +39,84 @@ extern "C" {
     static mut __bss_end: u8;
 }
 
+const EXEC_TABLE_MAGIC: [u8; 4] = *b"REXE";
+const EXEC_TABLE_HEADER_SIZE: usize = 512;
+const EXEC_TABLE_MAX_ENTRIES: usize = 15;
+const EXEC_TABLE_ENTRY_SIZE: usize = 32;
+
+#[inline]
+const fn align_up(value: usize, alignment: usize) -> usize {
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+#[no_mangle]
+extern "C" fn relocate_exec_table() {
+    // Exec table is appended after the raw kernel binary in the disk image.
+    // The kernel's `.bss` is NOBITS and therefore NOT present in `kernel.bin`,
+    // so the appended data can overlap `.bss` in memory. If we then clear `.bss`,
+    // we erase the exec table blobs (including `.bas` source).
+    //
+    // To avoid this, locate the exec table in the low region, copy it to the
+    // safe gap between `__bss_end` and `HEAP_START`, and invalidate the original
+    // table header so the normal scanner finds the relocated copy.
+    const SEARCH_START: usize = 0x100000;
+    const SEARCH_END: usize = HEAP_START;
+
+    unsafe {
+        let bss_end = core::ptr::addr_of!(__bss_end) as usize;
+        let dest_base = align_up(bss_end, 512);
+        if dest_base >= HEAP_START {
+            return;
+        }
+
+        let mut addr = SEARCH_START;
+        while addr + 4 <= SEARCH_END {
+            let magic = core::ptr::read(addr as *const [u8; 4]);
+            if magic != EXEC_TABLE_MAGIC {
+                addr += 4;
+                continue;
+            }
+
+            // Quick header validation.
+            let version = core::ptr::read_unaligned((addr + 4) as *const u32);
+            let count = core::ptr::read_unaligned((addr + 8) as *const u32) as usize;
+            if version != 1 || count > EXEC_TABLE_MAX_ENTRIES {
+                addr += 4;
+                continue;
+            }
+
+            // Compute total table size including 512-byte aligned blobs.
+            let mut total = EXEC_TABLE_HEADER_SIZE;
+            for i in 0..count {
+                let entry = addr + 16 + i * EXEC_TABLE_ENTRY_SIZE;
+                let offset = core::ptr::read_unaligned((entry + 16) as *const u32) as usize;
+                let size = core::ptr::read_unaligned((entry + 20) as *const u32) as usize;
+                if offset < EXEC_TABLE_HEADER_SIZE || size == 0 {
+                    total = 0;
+                    break;
+                }
+                let end = offset.saturating_add(align_up(size, 512));
+                if end > total {
+                    total = end;
+                }
+            }
+            if total == 0 {
+                addr += 4;
+                continue;
+            }
+
+            let dest_end = dest_base.saturating_add(total);
+            if dest_end > HEAP_START {
+                return;
+            }
+
+            core::ptr::copy_nonoverlapping(addr as *const u8, dest_base as *mut u8, total);
+            core::ptr::write_bytes(addr as *mut u8, 0, 4);
+            return;
+        }
+    }
+}
+
 #[no_mangle]
 extern "C" fn zero_bss() {
     unsafe {
@@ -56,11 +134,13 @@ extern "C" fn zero_bss() {
 pub unsafe extern "C" fn _start() -> ! {
     core::arch::naked_asm!(
         "mov rsp, 0x90000",
+        "call {relocate_exec_table}",
         "call {zero_bss}",
         "call {kernel_main}",
         "2:",
         "hlt",
         "jmp 2b",
+        relocate_exec_table = sym relocate_exec_table,
         zero_bss = sym zero_bss,
         kernel_main = sym kernel_main,
     )
