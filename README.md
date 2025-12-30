@@ -25,15 +25,13 @@ Only Rust's `core` library is used. The `alloc` crate is enabled once we have a 
 - **Identity mapped**: Physical addresses = virtual addresses
 
 ### Application Model
-- **Initially**: Apps are Rust modules compiled into the kernel
-  - Any function can be spawned as a task
-  - Multiple instances of the same app can run concurrently
-  - All tasks share the same memory space
-- **Later**: Dynamic loading of external executables
+- ELF executables can be embedded and spawned as tasks
+- BASIC programs are embedded as faux-files (`bas/*.bas`) and loaded via `LOAD "name"`
 
 ### I/O
 - **Serial output only**: COM1 (0x3F8) via UART 16550
-- **No graphics**: Run with `qemu -display none -serial stdio`
+- **Optional graphics**: VGA mode 13h can be enabled (see `make run-vga*`)
+- **Optional telnet**: A per-connection BASIC REPL is available on TCP port 23 (forwarded by `make run-net`)
 
 ### Bootloader
 - Custom two-stage bootloader written in assembly
@@ -44,11 +42,16 @@ Only Rust's `core` library is used. The `alloc` crate is enabled once we have a 
 ## Quick Start
 
 ```bash
-# One-time setup (installs Rust nightly, bootimage tool)
+# One-time setup (installs Rust nightly and required components)
 make setup
 
-# Build and run
+# Build and run (serial, no VGA)
 make run
+
+# Run with NE2000 networking + port forwards:
+# - host tcp/2323 -> guest tcp/23 (telnet BASIC)
+# - host tcp/8080 -> guest tcp/8080 (BASIC todo server, if you run it)
+make run-net
 ```
 
 ## Building
@@ -74,8 +77,11 @@ make setup
 |-------------------|------------------------------------------|
 | `make build`      | Build the kernel image                   |
 | `make run`        | Build and run in QEMU                    |
-| `make run-net`    | Run with NE2000 network (user mode)      |
+| `make run-net`    | Run with NE2000 network + port forwards  |
 | `make run-net-tap`| Run with TAP networking (ping support)   |
+| `make run-vga`    | Run with VGA visualization enabled       |
+| `make run-vga-mouse` | Run with VGA + mouse enabled          |
+| `make run-vga-mouse-net` | Run with VGA+mouse+network       |
 | `make debug`      | Run with QEMU interrupt logging          |
 | `make gdb`        | Run with GDB server (port 1234)          |
 | `make clean`      | Remove build artifacts                   |
@@ -115,8 +121,19 @@ Ralph OS includes a TCP/IP network stack with:
 ### Running with Network
 
 ```bash
-# Run with QEMU user-mode networking (no ping from host)
+# Run with QEMU user-mode networking (no ping from host).
+# Also forwards:
+# - host tcp/2323 -> guest tcp/23 (telnet)
+# - host tcp/8080 -> guest tcp/8080 (HTTP, if you run it)
 make run-net
+```
+
+### Telnet BASIC REPL
+
+Each telnet connection spawns its own BASIC REPL task.
+
+```bash
+telnet localhost 2323
 ```
 
 Network configuration (QEMU user networking defaults):
@@ -160,12 +177,14 @@ ralph_os/
 ├── bootloader/
 │   ├── stage1.asm          # Boot sector (512 bytes, 16-bit)
 │   └── stage2.asm          # Mode transitions (16→32→64-bit)
+├── bas/                    # Embedded BASIC programs (*.bas)
 ├── src/
 │   ├── main.rs             # Kernel entry point
 │   ├── serial.rs           # Custom UART 16550 driver
 │   ├── allocator.rs        # Linked list heap allocator
 │   ├── scheduler.rs        # Cooperative task scheduler
 │   ├── api.rs              # Kernel API for programs
+│   ├── telnet.rs           # Telnet server spawning BASIC sessions
 │   ├── basic/              # BASIC interpreter
 │   └── net/                # TCP/IP network stack
 │       ├── ne2000.rs       # NE2000 NIC driver
