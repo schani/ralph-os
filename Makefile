@@ -158,7 +158,7 @@ run-net: image
 		-serial stdio \
 		-display none \
 		-no-reboot \
-		-netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+		-netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=tcp::2323-:23 \
 		-device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 
 # Run with TAP networking for ping testing (requires sudo)
