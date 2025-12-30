@@ -311,6 +311,8 @@ pub struct TcpControlBlock {
     pub has_data: bool,
     /// Is the connection closed by remote?
     pub remote_closed: bool,
+    /// Has this connection been accepted by an application?
+    pub accepted: bool,
 }
 
 impl TcpControlBlock {
@@ -345,6 +347,7 @@ impl TcpControlBlock {
             in_use: false,
             has_data: false,
             remote_closed: false,
+            accepted: false,
         }
     }
 
@@ -996,8 +999,6 @@ fn send_pending_data(conn: &mut TcpControlBlock) {
     if pending == 0 {
         return;
     }
-    println!("[tcp] send_pending_data: {} bytes pending", pending);
-
     // Calculate how much we can send
     let flight_size = conn.snd_nxt.wrapping_sub(conn.snd_una) as usize;
     let window = core::cmp::min(conn.snd_wnd as usize, conn.cwnd as usize);
@@ -1152,7 +1153,6 @@ pub fn send(sock: usize, data: &[u8]) -> isize {
             return -1;
         }
 
-        println!("[tcp] send() called with {} bytes", data.len());
         let n = conn.write(data);
         n as isize
     }
@@ -1198,28 +1198,32 @@ pub fn accept(sock: usize) -> Option<usize> {
             return None;
         }
 
-        let listener = &CONNECTIONS[sock];
-        if listener.state != TcpState::Listen {
+        let listener_port = CONNECTIONS[sock].local_port;
+        if CONNECTIONS[sock].state != TcpState::Listen {
             return None;
         }
 
-        for (i, conn) in CONNECTIONS.iter().enumerate() {
-            if i == sock || !conn.in_use || conn.local_port != listener.local_port {
+        // Prefer connections with data waiting.
+        for (i, conn) in CONNECTIONS.iter_mut().enumerate() {
+            if i == sock || !conn.in_use || conn.local_port != listener_port || conn.accepted {
                 continue;
             }
             if (conn.state == TcpState::Established || conn.state == TcpState::CloseWait)
-                && conn.bytes_available() > 0
-            {
+                && conn.bytes_available() > 0 {
+                conn.accepted = true;
                 return Some(i);
             }
         }
 
-        for (i, conn) in CONNECTIONS.iter().enumerate() {
+        // Otherwise accept any established connection that hasn't been accepted yet.
+        for (i, conn) in CONNECTIONS.iter_mut().enumerate() {
             if i != sock
                 && conn.in_use
-                && conn.local_port == listener.local_port
+                && conn.local_port == listener_port
+                && !conn.accepted
                 && (conn.state == TcpState::Established || conn.state == TcpState::CloseWait)
             {
+                conn.accepted = true;
                 return Some(i);
             }
         }

@@ -29,6 +29,7 @@ mod task;
 mod timer;
 mod vga;
 mod memvis;
+mod telnet;
 
 use core::panic::PanicInfo;
 
@@ -246,6 +247,10 @@ pub extern "C" fn kernel_main() -> ! {
         match scheduler::spawn("network", net::network_task) {
             Some(_) => println!("  - network: Network protocol handler"),
             None => println!("  - network: FAILED (out of memory)"),
+        }
+        match scheduler::spawn("telnetd", telnet::telnetd_task) {
+            Some(_) => println!("  - telnetd: Telnet BASIC sessions on port 23"),
+            None => println!("  - telnetd: FAILED (out of memory)"),
         }
     }
     match scheduler::spawn("basic-repl", basic::repl_task) {

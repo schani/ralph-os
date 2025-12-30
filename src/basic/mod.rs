@@ -7,6 +7,7 @@ pub mod value;
 pub mod lexer;
 pub mod parser;
 pub mod interpreter;
+pub mod terminal;
 
 #[allow(unused_imports)]
 pub use value::Value;
@@ -17,31 +18,34 @@ pub use lexer::Token;
 
 use alloc::string::String;
 use crate::scheduler;
-use crate::serial;
 use crate::meminfo;
+use core::fmt::Write;
+use terminal::{ReadStatus, Terminal};
 
 /// Print detailed memory statistics using the unified meminfo API
-fn print_memstats() {
-    crate::println!("=== MEMORY MAP ===");
-    crate::println!();
+fn print_memstats(out: &mut dyn core::fmt::Write) {
+    let _ = writeln!(out, "=== MEMORY MAP ===");
+    let _ = writeln!(out);
 
     // Print region statistics
     for region in meminfo::get_region_stats() {
         let total_kb = (region.end - region.start) / 1024;
-        crate::println!("{}: 0x{:X} - 0x{:X} ({} KB)",
+        let _ = writeln!(
+            out,
+            "{}: 0x{:X} - 0x{:X} ({} KB)",
             region.name, region.start, region.end, total_kb);
-        crate::println!("  Used: {} bytes", region.used);
-        crate::println!("  Free: {} bytes", region.free);
-        crate::println!();
+        let _ = writeln!(out, "  Used: {} bytes", region.used);
+        let _ = writeln!(out, "  Free: {} bytes", region.free);
+        let _ = writeln!(out);
     }
 
     // Per-task breakdown
     let tasks = meminfo::get_task_memory_info();
 
     if tasks.is_empty() {
-        crate::println!("No tasks running.");
+        let _ = writeln!(out, "No tasks running.");
     } else {
-        crate::println!("TASKS ({}):", tasks.len());
+        let _ = writeln!(out, "TASKS ({}):", tasks.len());
         for task in &tasks {
             let state_str = match task.state {
                 crate::task::TaskState::Ready => "ready",
@@ -49,33 +53,41 @@ fn print_memstats() {
                 crate::task::TaskState::Sleeping => "sleeping",
                 crate::task::TaskState::Finished => "finished",
             };
-            crate::println!();
-            crate::println!("  [{}] {} ({})", task.id, task.name, state_str);
+            let _ = writeln!(out);
+            let _ = writeln!(out, "  [{}] {} ({})", task.id, task.name, state_str);
 
             // Stack
             if let Some((stack_base, stack_size)) = task.stack {
-                crate::println!("    Stack: 0x{:X} - 0x{:X} ({} KB)",
+                let _ = writeln!(
+                    out,
+                    "    Stack: 0x{:X} - 0x{:X} ({} KB)",
                     stack_base, stack_base + stack_size, stack_size / 1024);
             }
 
             // Program code (if loaded ELF)
             if let Some((prog_base, prog_size, ref prog_name)) = task.program {
-                crate::println!("    Code:  0x{:X} - 0x{:X} ({} KB) [{}]",
+                let _ = writeln!(
+                    out,
+                    "    Code:  0x{:X} - 0x{:X} ({} KB) [{}]",
                     prog_base, prog_base + prog_size, prog_size / 1024, prog_name);
             }
 
             // Kernel heap allocations (0x200000-0x400000)
             if !task.kernel_heap.is_empty() {
                 let total: usize = task.kernel_heap.iter().map(|(_, s)| *s).sum();
-                crate::println!("    Kernel heap: {} allocs, {} bytes total",
+                let _ = writeln!(
+                    out,
+                    "    Kernel heap: {} allocs, {} bytes total",
                     task.kernel_heap.len(), total);
             }
 
             // Program heap blocks (0x400000-0x1000000)
             if !task.program_heap.is_empty() {
-                crate::println!("    Program heap: {} blocks", task.program_heap.len());
+                let _ = writeln!(out, "    Program heap: {} blocks", task.program_heap.len());
                 for (addr, size) in &task.program_heap {
-                    crate::println!("      0x{:X} - 0x{:X} ({} bytes)",
+                    let _ = writeln!(
+                        out,
+                        "      0x{:X} - 0x{:X} ({} bytes)",
                         addr, addr + size, size);
                 }
             }
@@ -86,25 +98,26 @@ fn print_memstats() {
     let kernel_allocs = meminfo::get_kernel_heap_allocations();
     if !kernel_allocs.is_empty() {
         let total: usize = kernel_allocs.iter().map(|(_, s)| *s).sum();
-        crate::println!();
-        crate::println!("KERNEL (boot allocations):");
-        crate::println!("  Heap: {} allocs, {} bytes total", kernel_allocs.len(), total);
+        let _ = writeln!(out);
+        let _ = writeln!(out, "KERNEL (boot allocations):");
+        let _ = writeln!(out, "  Heap: {} allocs, {} bytes total", kernel_allocs.len(), total);
     }
 
-    crate::println!();
+    let _ = writeln!(out);
 }
 
 /// Run a BASIC program headlessly (for background tasks)
 pub fn run_headless(source: &str) {
+    let mut term = terminal::SerialTerminal;
     let mut interp = Interpreter::new();
     if let Err(e) = interp.load_program(source) {
-        crate::println!("BASIC load error: {}", e);
+        let _ = writeln!(&mut term, "BASIC load error: {}", e);
         return;
     }
     interp.run();
 
     while interp.is_running() {
-        let status = interp.step();
+        let status = interp.step(&mut term);
         match status {
             ExecutionStatus::Sleeping(ms) => {
                 scheduler::sleep_ms(ms);
@@ -123,59 +136,64 @@ pub fn run_headless(source: &str) {
     }
 
     if let ExecutionStatus::Error(ref e) = *interp.status() {
-        crate::println!("BASIC Error: {}", e);
+        let _ = writeln!(&mut term, "BASIC Error: {}", e);
     }
 }
 
-/// Read a line from serial input (with echo and editing)
-fn read_line() -> String {
+/// Read a line from a terminal (with echo and editing).
+///
+/// Returns None on EOF (e.g., telnet disconnect).
+fn read_line(term: &mut dyn Terminal) -> Option<String> {
     let mut line = String::new();
 
     loop {
-        // Yield while waiting for input
-        if !serial::has_data() {
-            scheduler::yield_now();
-            continue;
-        }
-
-        let byte = serial::read_byte();
+        let byte = match term.poll_byte() {
+            ReadStatus::Byte(b) => b,
+            ReadStatus::NoData => {
+                scheduler::yield_now();
+                continue;
+            }
+            ReadStatus::Eof => return None,
+        };
 
         match byte {
             b'\r' | b'\n' => {
-                crate::println!(); // Echo newline
+                let _ = writeln!(term); // Echo newline
                 break;
             }
             8 | 127 => {
                 // Backspace or DEL
                 if !line.is_empty() {
                     line.pop();
-                    crate::print!("\x08 \x08"); // Erase character
+                    let _ = write!(term, "\x08 \x08"); // Erase character
                 }
             }
             b if b >= 32 && b < 127 => {
                 // Printable ASCII
                 line.push(b as char);
-                crate::print!("{}", b as char); // Echo
+                let _ = write!(term, "{}", b as char); // Echo
             }
             _ => {}
         }
     }
 
-    line
+    Some(line)
 }
 
 /// Run the interactive BASIC REPL
-pub fn run_repl() {
-    crate::println!("Ralph BASIC v1.0");
-    crate::println!("Type RUN to execute, LIST to show program, NEW to clear");
-    crate::println!("Type LOAD \"name\" to load name.bas");
-    crate::println!();
+pub fn run_repl_on_terminal(term: &mut dyn Terminal) {
+    let _ = writeln!(term, "Ralph BASIC v1.0");
+    let _ = writeln!(term, "Type RUN to execute, LIST to show program, NEW to clear");
+    let _ = writeln!(term, "Type LOAD \"name\" to load name.bas");
+    let _ = writeln!(term);
 
     let mut interp = Interpreter::new();
 
     loop {
-        crate::print!("> ");
-        let line = read_line();
+        let _ = write!(term, "> ");
+        let Some(line) = read_line(term) else {
+            return;
+        };
         let line = line.trim();
 
         if line.is_empty() {
@@ -190,7 +208,7 @@ pub fn run_repl() {
             Token::Run => {
                 interp.run();
                 while interp.is_running() {
-                    let status = interp.step();
+                    let status = interp.step(term);
                     match status {
                         ExecutionStatus::Sleeping(ms) => {
                             scheduler::sleep_ms(ms);
@@ -202,32 +220,32 @@ pub fn run_repl() {
                     }
                 }
                 if let ExecutionStatus::Error(ref e) = *interp.status() {
-                    crate::println!("Error: {}", e);
+                    let _ = writeln!(term, "Error: {}", e);
                 }
                 continue;
             }
             Token::List => {
-                interp.list();
+                interp.list(term);
                 continue;
             }
             Token::New => {
                 interp.clear();
-                crate::println!("Program cleared");
+                let _ = writeln!(term, "Program cleared");
                 continue;
             }
             Token::Load => {
                 match load_bas_program(&mut interp, line) {
                     Ok(filename) => {
-                        crate::println!("Loaded {}", filename);
+                        let _ = writeln!(term, "Loaded {}", filename);
                     }
                     Err(e) => {
-                        crate::println!("Error: {}", e);
+                        let _ = writeln!(term, "Error: {}", e);
                     }
                 }
                 continue;
             }
             Token::Memstats => {
-                print_memstats();
+                print_memstats(term);
                 continue;
             }
             _ => {}
@@ -241,13 +259,13 @@ pub fn run_repl() {
                     interp.set_line(num, stmt);
                 } else {
                     // Immediate mode - execute now
-                    let status = interp.execute_immediate(&stmt);
+                    let status = interp.execute_immediate(term, &stmt);
                     match status {
                         ExecutionStatus::Sleeping(ms) => {
                             scheduler::sleep_ms(ms);
                         }
                         ExecutionStatus::Error(e) => {
-                            crate::println!("Error: {}", e);
+                            let _ = writeln!(term, "Error: {}", e);
                         }
                         _ => {}
                     }
@@ -255,7 +273,7 @@ pub fn run_repl() {
             }
             Ok(None) => {}
             Err(e) => {
-                crate::println!("Syntax error: {}", e.0);
+                let _ = writeln!(term, "Syntax error: {}", e.0);
             }
         }
     }
@@ -315,5 +333,6 @@ pub fn memstats_task() {
 
 /// Interactive BASIC REPL task
 pub fn repl_task() {
-    run_repl();
+    let mut term = terminal::SerialTerminal;
+    run_repl_on_terminal(&mut term);
 }

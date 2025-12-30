@@ -6,6 +6,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::fmt;
 use super::value::Value;
 use super::parser::{Statement, Expr, BinaryOp, ForState, Parser};
 use crate::allocator;
@@ -137,7 +138,7 @@ impl Interpreter {
     }
 
     /// Execute one statement (for cooperative scheduling)
-    pub fn step(&mut self) -> ExecutionStatus {
+    pub fn step(&mut self, out: &mut dyn fmt::Write) -> ExecutionStatus {
         if !self.running {
             return ExecutionStatus::Finished;
         }
@@ -168,6 +169,7 @@ impl Interpreter {
 
         // Execute the statement (split borrow: stmt from program, mutable state separate)
         match execute_statement(
+            out,
             &mut self.variables,
             &mut self.for_stack,
             &mut self.return_stack,
@@ -222,17 +224,18 @@ impl Interpreter {
     }
 
     /// List the program
-    pub fn list(&self) {
+    pub fn list(&self, out: &mut dyn fmt::Write) {
         for &line_num in &self.line_order {
             if let Some(stmt) = self.program.get(&line_num) {
-                crate::println!("{} {}", line_num, format_statement(stmt));
+                let _ = writeln!(out, "{} {}", line_num, format_statement(stmt));
             }
         }
     }
 
     /// Execute an immediate command (for REPL)
-    pub fn execute_immediate(&mut self, stmt: &Statement) -> ExecutionStatus {
+    pub fn execute_immediate(&mut self, out: &mut dyn fmt::Write, stmt: &Statement) -> ExecutionStatus {
         match execute_statement(
+            out,
             &mut self.variables,
             &mut self.for_stack,
             &mut self.return_stack,
@@ -267,6 +270,7 @@ enum NextAction {
 /// - line_order is needed for FOR loop body lookup
 /// - stmt is borrowed from the program BTreeMap
 fn execute_statement(
+    out: &mut dyn fmt::Write,
     variables: &mut BTreeMap<String, Value>,
     for_stack: &mut Vec<ForState>,
     return_stack: &mut Vec<usize>,
@@ -280,11 +284,11 @@ fn execute_statement(
             for (i, expr) in exprs.iter().enumerate() {
                 let value = eval_expr(variables, expr)?;
                 if i > 0 {
-                    crate::print!(" ");
+                    let _ = write!(out, " ");
                 }
-                crate::print!("{}", value);
+                let _ = write!(out, "{}", value);
             }
-            crate::println!();
+            let _ = writeln!(out);
             Ok(NextAction::Continue)
         }
 
@@ -406,7 +410,7 @@ fn execute_statement(
             let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             match api::spawn_program_dynamic(name, &arg_refs) {
                 Ok(task_id) => {
-                    crate::println!("Spawned '{}' as task {}", name, task_id);
+                    let _ = writeln!(out, "Spawned '{}' as task {}", name, task_id);
                     Ok(NextAction::Continue)
                 }
                 Err(e) => Err(alloc::format!("SPAWN failed: {:?}", e)),
