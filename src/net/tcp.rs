@@ -227,6 +227,19 @@ impl RingBuffer {
         to_read
     }
 
+    fn peek_offset(&self, offset: usize, buf: &mut [u8]) -> usize {
+        if offset >= self.len {
+            return 0;
+        }
+        let to_read = core::cmp::min(buf.len(), self.len - offset);
+        let mut pos = (self.tail + offset) % RX_BUFFER_SIZE;
+        for byte in buf.iter_mut().take(to_read) {
+            *byte = self.data[pos];
+            pos = (pos + 1) % RX_BUFFER_SIZE;
+        }
+        to_read
+    }
+
     fn consume(&mut self, count: usize) {
         let to_consume = core::cmp::min(count, self.len);
         self.tail = (self.tail + to_consume) % RX_BUFFER_SIZE;
@@ -513,12 +526,21 @@ fn send_segment(
     flags: u8,
     payload: &[u8],
 ) -> bool {
+    send_segment_seq(conn, conn.snd_nxt, flags, payload)
+}
+
+fn send_segment_seq(
+    conn: &TcpControlBlock,
+    seq: u32,
+    flags: u8,
+    payload: &[u8],
+) -> bool {
     let mut segment = [0u8; 1500];
     let seg_len = build_segment(
         &mut segment,
         conn.local_port,
         conn.remote_port,
-        conn.snd_nxt,
+        seq,
         conn.rcv_nxt,
         flags,
         conn.rcv_wnd,
@@ -889,6 +911,9 @@ fn process_ack(conn: &mut TcpControlBlock, ack: u32) {
         // Reset retransmit timer
         if conn.snd_una != conn.snd_nxt {
             conn.retransmit_timer = timer::ticks() + conn.rto;
+        } else {
+            conn.retransmit_timer = 0;
+            conn.retransmit_count = 0;
         }
     } else if ack == conn.last_ack {
         // Duplicate ACK
@@ -932,16 +957,22 @@ fn update_rtt(conn: &mut TcpControlBlock) {
 
 /// Retransmit unacknowledged data
 fn retransmit(conn: &mut TcpControlBlock) {
-    let pending = conn.tx_buffer.available();
-    if pending == 0 {
+    let in_flight = conn.snd_nxt.wrapping_sub(conn.snd_una) as usize;
+    if in_flight == 0 {
         return;
     }
 
-    let to_send = core::cmp::min(pending, MSS as usize);
-    let mut data = [0u8; MSS as usize];
-    conn.tx_buffer.peek(&mut data[..to_send]);
+    let available = conn.tx_buffer.available();
+    let unacked = core::cmp::min(available, in_flight);
+    if unacked == 0 {
+        return;
+    }
 
-    send_segment(conn, FLAG_ACK | FLAG_PSH, &data[..to_send]);
+    let to_send = core::cmp::min(unacked, MSS as usize);
+    let mut data = [0u8; MSS as usize];
+    conn.tx_buffer.peek_offset(0, &mut data[..to_send]);
+
+    send_segment_seq(conn, conn.snd_una, FLAG_ACK | FLAG_PSH, &data[..to_send]);
     conn.retransmit_timer = timer::ticks() + conn.rto;
     conn.retransmit_count += 1;
 }
@@ -995,10 +1026,11 @@ pub fn process_timers() {
 
 /// Send pending data from TX buffer
 fn send_pending_data(conn: &mut TcpControlBlock) {
-    let pending = conn.tx_buffer.available();
-    if pending == 0 {
+    let total_buffered = conn.tx_buffer.available();
+    if total_buffered == 0 {
         return;
     }
+
     // Calculate how much we can send
     let flight_size = conn.snd_nxt.wrapping_sub(conn.snd_una) as usize;
     let window = core::cmp::min(conn.snd_wnd as usize, conn.cwnd as usize);
@@ -1008,9 +1040,14 @@ fn send_pending_data(conn: &mut TcpControlBlock) {
         return;
     }
 
-    let to_send = core::cmp::min(core::cmp::min(pending, can_send), MSS as usize);
+    let unsent = total_buffered.saturating_sub(flight_size);
+    if unsent == 0 {
+        return;
+    }
+
+    let to_send = core::cmp::min(core::cmp::min(unsent, can_send), MSS as usize);
     let mut data = [0u8; MSS as usize];
-    conn.tx_buffer.peek(&mut data[..to_send]);
+    conn.tx_buffer.peek_offset(flight_size, &mut data[..to_send]);
 
     if send_segment(conn, FLAG_ACK | FLAG_PSH, &data[..to_send]) {
         conn.snd_nxt = conn.snd_nxt.wrapping_add(to_send as u32);
