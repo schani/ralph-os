@@ -20,10 +20,14 @@ NASM            = nasm
 OBJCOPY         = $(shell find ~/.rustup -name 'llvm-objcopy' 2>/dev/null | head -1)
 QEMU            = qemu-system-x86_64
 PYTHON          = python3
+CARGO          ?= cargo
 
 # Kernel size limit (must match KERNEL_SECTORS in stage2.asm)
 # 450 sectors * 512 bytes = 230400 bytes (includes kernel + exec table + programs)
 MAX_KERNEL_SIZE = 230400
+
+# All kernel sources (including nested modules)
+KERNEL_SRCS     = $(shell find src -name '*.rs')
 
 # Default target
 all: image
@@ -49,8 +53,8 @@ $(STAGE2): $(BOOT_DIR)/stage2.asm | $(BUILD_DIR)
 bootloader: $(STAGE1) $(STAGE2)
 
 # Build kernel
-$(KERNEL): src/*.rs src/basic/*.rs Cargo.toml kernel.ld
-	cargo build --release
+$(KERNEL): $(KERNEL_SRCS) Cargo.toml kernel.ld
+	$(CARGO) build --release
 
 # Convert kernel ELF to flat binary
 $(KERNEL_BIN): $(KERNEL)
@@ -62,7 +66,7 @@ kernel: $(KERNEL_BIN)
 # Build a program
 $(BUILD_DIR)/programs/%.elf: $(PROGRAMS_DIR)/%/src/main.rs $(PROGRAMS_DIR)/%/Cargo.toml | $(BUILD_DIR)/programs
 	@echo "Building program: $*"
-	cd $(PROGRAMS_DIR)/$* && cargo build --release
+	cd $(PROGRAMS_DIR)/$* && $(CARGO) build --release
 	cp $(PROGRAMS_DIR)/$*/target/x86_64-ralph_program/release/$* $@
 	@echo "Program $* size: $$(stat -c %s $@) bytes"
 

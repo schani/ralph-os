@@ -1204,12 +1204,22 @@ pub fn accept(sock: usize) -> Option<usize> {
             return None;
         }
 
-        // Find an established connection on this port
+        for (i, conn) in CONNECTIONS.iter().enumerate() {
+            if i == sock || !conn.in_use || conn.local_port != listener.local_port {
+                continue;
+            }
+            if (conn.state == TcpState::Established || conn.state == TcpState::CloseWait)
+                && conn.bytes_available() > 0
+            {
+                return Some(i);
+            }
+        }
+
         for (i, conn) in CONNECTIONS.iter().enumerate() {
             if i != sock
                 && conn.in_use
                 && conn.local_port == listener.local_port
-                && conn.state == TcpState::Established
+                && (conn.state == TcpState::Established || conn.state == TcpState::CloseWait)
             {
                 return Some(i);
             }

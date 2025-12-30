@@ -300,6 +300,19 @@ pub fn handle_interrupt() -> usize {
                 break;
             }
 
+            // Remote DMA complete can get set even though we don't enable it in IMR.
+            // If it remains set, this handler can spin forever.
+            if isr & ISR_RDC != 0 {
+                outb(base + ISR, ISR_RDC);
+            }
+
+            // Counter overflow and reset status are also sticky; clear them if present.
+            if isr & ISR_CNT != 0 {
+                outb(base + ISR, ISR_CNT);
+            }
+            if isr & ISR_RST != 0 {
+                outb(base + ISR, ISR_RST);
+            }
 
             // Handle receive
             if isr & ISR_PRX != 0 {
@@ -441,7 +454,10 @@ pub fn send(data: &[u8]) -> bool {
         return false;
     }
 
-    unsafe {
+    let interrupts_were_enabled = crate::idt::are_interrupts_enabled();
+    crate::idt::disable_interrupts();
+
+    let result = unsafe {
         let base = NE2000.iobase;
 
         // Wait for previous transmission to complete
@@ -450,43 +466,49 @@ pub fn send(data: &[u8]) -> bool {
             timeout -= 1;
         }
         if timeout == 0 {
-            return false;
+            false
+        } else {
+            // Pad to minimum Ethernet frame size (60 bytes without CRC)
+            let len = if data.len() < 60 { 60 } else { data.len() };
+
+            // Set up remote DMA to write to TX buffer
+            outb(base + RSAR0, 0);
+            outb(base + RSAR1, TX_START);
+            outb(base + RBCR0, (len & 0xFF) as u8);
+            outb(base + RBCR1, ((len >> 8) & 0xFF) as u8);
+            outb(base + CR, CR_STA | CR_DMA_WRITE);
+
+            // Write data (16-bit transfers)
+            let mut i = 0;
+            while i < len {
+                let lo = if i < data.len() { data[i] } else { 0 };
+                let hi = if i + 1 < data.len() { data[i + 1] } else { 0 };
+                let word = (lo as u16) | ((hi as u16) << 8);
+                outw(base + DATA, word);
+                i += 2;
+            }
+
+            // Wait for DMA complete
+            while inb(base + ISR) & ISR_RDC == 0 {}
+            outb(base + ISR, ISR_RDC);
+
+            // Set transmit page and byte count
+            outb(base + TPSR, TX_START);
+            outb(base + TBCR0, (len & 0xFF) as u8);
+            outb(base + TBCR1, ((len >> 8) & 0xFF) as u8);
+
+            // Start transmission
+            outb(base + CR, CR_STA | CR_TXP | CR_DMA_NONE);
+
+            true
         }
+    };
 
-        // Pad to minimum Ethernet frame size (60 bytes without CRC)
-        let len = if data.len() < 60 { 60 } else { data.len() };
-
-        // Set up remote DMA to write to TX buffer
-        outb(base + RSAR0, 0);
-        outb(base + RSAR1, TX_START);
-        outb(base + RBCR0, (len & 0xFF) as u8);
-        outb(base + RBCR1, ((len >> 8) & 0xFF) as u8);
-        outb(base + CR, CR_STA | CR_DMA_WRITE);
-
-        // Write data (16-bit transfers)
-        let mut i = 0;
-        while i < len {
-            let lo = if i < data.len() { data[i] } else { 0 };
-            let hi = if i + 1 < data.len() { data[i + 1] } else { 0 };
-            let word = (lo as u16) | ((hi as u16) << 8);
-            outw(base + DATA, word);
-            i += 2;
-        }
-
-        // Wait for DMA complete
-        while inb(base + ISR) & ISR_RDC == 0 {}
-        outb(base + ISR, ISR_RDC);
-
-        // Set transmit page and byte count
-        outb(base + TPSR, TX_START);
-        outb(base + TBCR0, (len & 0xFF) as u8);
-        outb(base + TBCR1, ((len >> 8) & 0xFF) as u8);
-
-        // Start transmission
-        outb(base + CR, CR_STA | CR_TXP | CR_DMA_NONE);
-
-        true
+    if interrupts_were_enabled {
+        crate::idt::enable_interrupts();
     }
+
+    result
 }
 
 /// Acknowledge interrupt (clear ISR)
