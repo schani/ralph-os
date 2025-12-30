@@ -45,13 +45,8 @@ Only Rust's `core` library is used. The `alloc` crate is enabled once we have a 
 # One-time setup (installs Rust nightly and required components)
 make setup
 
-# Build and run (serial, no VGA)
-make run
-
-# Run with NE2000 networking + port forwards:
-# - host tcp/2323 -> guest tcp/23 (telnet BASIC)
-# - host tcp/8080 -> guest tcp/8080 (BASIC todo server, if you run it)
-make run-net
+# Recommended: VGA + mouse + networking + port forwards
+make run-vga-mouse-net
 ```
 
 ## Building
@@ -75,17 +70,24 @@ make setup
 
 | Command           | Description                              |
 |-------------------|------------------------------------------|
-| `make build`      | Build the kernel image                   |
-| `make run`        | Build and run in QEMU                    |
-| `make run-net`    | Run with NE2000 network + port forwards  |
+| `make all`        | Build bootable image (default)           |
+| `make build`      | Build bootable image                     |
+| `make bootloader` | Build bootloader only                    |
+| `make kernel`     | Build kernel only                        |
+| `make programs`   | Build all user programs                  |
+| `make image`      | Create bootable disk image               |
+| `make run`        | Run (serial, no VGA)                     |
+| `make run-net`    | Run with NE2000 + port forwards          |
 | `make run-net-tap`| Run with TAP networking (ping support)   |
-| `make run-vga`    | Run with VGA visualization enabled       |
-| `make run-vga-mouse` | Run with VGA + mouse enabled          |
+| `make run-vga`    | Run with VGA visualization               |
+| `make run-vga-mouse` | Run with VGA + mouse                  |
 | `make run-vga-mouse-net` | Run with VGA+mouse+network       |
+| `make test-vga`   | Smoke-test VGA via screenshot            |
 | `make debug`      | Run with QEMU interrupt logging          |
 | `make gdb`        | Run with GDB server (port 1234)          |
 | `make clean`      | Remove build artifacts                   |
 | `make setup`      | Install required Rust tools (run once)   |
+| `make help`       | Show Makefile help                       |
 
 ### Manual Build
 
@@ -134,6 +136,21 @@ Each telnet connection spawns its own BASIC REPL task.
 
 ```bash
 telnet localhost 2323
+```
+
+### HTTP (BASIC)
+
+The repo includes a BASIC program that runs an HTTP server (`bas/todo.bas`). It is not auto-started; load it from the REPL:
+
+```text
+> LOAD "todo"
+> RUN
+```
+
+With `make run-net` / `make run-vga-mouse-net`, the host forwards `localhost:8080` to the guest, so you can hit it from the host:
+
+```bash
+curl http://localhost:8080/
 ```
 
 Network configuration (QEMU user networking defaults):
