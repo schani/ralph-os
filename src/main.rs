@@ -34,6 +34,21 @@ use core::panic::PanicInfo;
 const HEAP_START: usize = 0x200000;
 const HEAP_SIZE: usize = 0x200000;
 
+extern "C" {
+    static mut __bss_start: u8;
+    static mut __bss_end: u8;
+}
+
+#[no_mangle]
+extern "C" fn zero_bss() {
+    unsafe {
+        let start = core::ptr::addr_of_mut!(__bss_start) as *mut u8;
+        let end = core::ptr::addr_of_mut!(__bss_end) as *mut u8;
+        let size = end as usize - start as usize;
+        core::ptr::write_bytes(start, 0, size);
+    }
+}
+
 /// Kernel entry point
 #[unsafe(naked)]
 #[no_mangle]
@@ -41,10 +56,13 @@ const HEAP_SIZE: usize = 0x200000;
 pub unsafe extern "C" fn _start() -> ! {
     core::arch::naked_asm!(
         "mov rsp, 0x90000",
-        "call kernel_main",
+        "call {zero_bss}",
+        "call {kernel_main}",
         "2:",
         "hlt",
         "jmp 2b",
+        zero_bss = sym zero_bss,
+        kernel_main = sym kernel_main,
     )
 }
 
