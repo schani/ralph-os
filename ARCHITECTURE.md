@@ -22,11 +22,11 @@ BIOS → Stage 1 (boot sector) → Stage 2 → Kernel
   4. Jump to stage 2 at 0x7E00
 
 ### Stage 2 Bootloader (`bootloader/stage2.asm`)
-- **Location**: Sectors 2-17, loaded at 0x7E00
+- **Location**: CHS sectors 2-17 (LBA 1-16), loaded at 0x7E00
 - **Size**: 8KB (16 sectors)
 - **Responsibilities**:
   1. Enable A20 line (keyboard controller method)
-  2. Load kernel from disk to temporary buffer at 0x10000
+  2. Load the kernel "payload" (kernel binary + appended exec table) from disk
   3. Set up GDT (Global Descriptor Table)
   4. Switch to 32-bit protected mode
   5. Copy kernel from 0x10000 to 0x100000 (1MB)
@@ -103,11 +103,26 @@ BIOS → Stage 1 (boot sector) → Stage 2 → Kernel
 ┌──────────────────────────────────────┐
 │ Sector 0     │ Stage 1 (512 bytes)   │
 ├──────────────┼───────────────────────┤
-│ Sectors 1-16 │ Stage 2 (8KB)         │
+│ Sectors 1-16 │ Stage 2 (8KB)         │  (loaded via BIOS CHS sectors 2-17)
 ├──────────────┼───────────────────────┤
-│ Sectors 17+  │ Kernel binary         │
+│ Sectors 17+  │ Kernel payload        │
+│              │ - kernel.bin          │
+│              │ - padding (align 4)   │
+│              │ - exec_table.bin      │
 └──────────────┴───────────────────────┘
 ```
+
+## Embedded "Files" (Exec Table)
+
+The build appends an executable table after `kernel.bin` in the disk image. The table is used as a small embedded blob registry:
+- ELF programs (from `programs/*`)
+- BASIC source files (from `bas/*.bas`)
+
+At boot, the kernel scans memory for the `REXE` table header and can read entries by name.
+
+### `.bss` overlap mitigation
+
+Because `.bss` is `NOBITS` (not present in `kernel.bin`), the appended exec table can overlap the `.bss` region in memory. The kernel relocates the exec table in `_start` (before `.bss` is zeroed) to a safe location just after `__bss_end`.
 
 ## Module Structure
 
@@ -121,7 +136,7 @@ ralph_os/
 │   ├── io.rs             # Port I/O primitives (inb, outb)
 │   ├── serial.rs         # UART 16550 driver
 │   ├── allocator.rs      # Linked list heap allocator
-│   ├── program_alloc.rs  # Bump allocator for program region
+│   ├── program_alloc.rs  # First-fit allocator for program region (4KB aligned)
 │   ├── idt.rs            # Interrupt Descriptor Table
 │   ├── pic.rs            # 8259 PIC driver
 │   ├── interrupts.rs     # ISR stubs and handlers
@@ -132,6 +147,7 @@ ralph_os/
 │   ├── api.rs            # Kernel API for loaded programs
 │   ├── executable.rs     # ELF loader and memory tracking
 │   ├── elf.rs            # ELF format parser
+│   ├── telnet.rs         # Telnet server spawning BASIC sessions
 │   ├── net/              # Network subsystem
 │   │   ├── mod.rs        # Network init and main task
 │   │   ├── ne2000.rs     # NE2000 NIC driver
@@ -144,10 +160,12 @@ ralph_os/
 │   │   └── checksum.rs   # Internet checksum
 │   └── basic/            # BASIC interpreter
 │       ├── mod.rs        # Module and tasks
+│       ├── terminal.rs   # Terminal abstraction (serial, telnet)
 │       ├── lexer.rs      # Tokenizer
 │       ├── parser.rs     # AST builder
 │       └── interpreter.rs# BASIC runtime
 ├── programs/             # User programs (compiled to ELF)
+├── bas/                  # Embedded BASIC programs (*.bas) for LOAD
 ├── kernel.ld             # Linker script
 └── x86_64-ralph_os.json  # Custom target spec
 ```
@@ -263,8 +281,9 @@ make image
     ├── nasm stage2.asm → stage2.bin (8KB, padded)
     ├── cargo build → kernel ELF
     ├── objcopy → kernel.bin (flat binary)
+    ├── scripts/make_exec_table.py → exec_table.bin (ELFs + *.bas)
     │
-    └── Combine: stage1 + stage2 + kernel → ralph_os.img
+    └── Combine: stage1 + stage2 + kernel.bin + exec_table.bin → ralph_os.img
 ```
 
 ## Memory Allocators
@@ -276,7 +295,7 @@ A first-fit linked list allocator for kernel data structures:
 ```
 Region: 0x200000 - 0x400000 (2MB)
 
-Free Block Structure:
+Free Block Structure (stored in free regions):
 ┌──────────────────────────────────────┐
 │ size: usize (8 bytes)                │
 │ next: Option<NonNull<FreeBlock>>     │
@@ -287,11 +306,13 @@ Free Block Structure:
 
 - First-fit allocation with block splitting
 - Deallocation with adjacent block merging
-- Spinlock wrapper for safety
+- All blocks are 8-byte aligned
+- Allocation header is stored at the start of each allocated block (`magic = "RLPH"`)
+- Spinlock wrapper; allocations must not occur in interrupt context
 
 ### Program Region (`src/program_alloc.rs`)
 
-A simple bump allocator for program memory:
+A first-fit allocator for program memory:
 
 ```
 Region: 0x400000 - 0x1000000 (12MB)
@@ -319,6 +340,8 @@ pub struct Task {
     wake_at: u64,            // Timer tick to wake (if sleeping)
 }
 ```
+
+`TaskId` is a `u32`.
 
 ### Scheduler (`src/scheduler.rs`)
 
@@ -383,22 +406,36 @@ Safety features:
 
 ## BASIC Interpreter
 
-Interactive BASIC REPL with line-numbered programs:
+Interactive BASIC REPL with line-numbered programs. No program is preloaded at boot.
 
 ### Supported Commands
 - `PRINT expr` - Output values
 - `LET var = expr` - Variable assignment
-- `INPUT var` - Read user input
 - `FOR/NEXT` - Counting loops
 - `IF/THEN/ELSE` - Conditionals
 - `GOTO line` - Jump to line
 - `GOSUB/RETURN` - Subroutines
 - `SPAWN "name", "arg1", ...` - Run program in background with arguments
+- `LOAD "name"` - Load `name.bas` from the embedded faux-file table
 - `RUN/LIST/NEW` - Program control
 
 ### Tasks
-- `memstats_task` - Periodic heap usage display
-- `repl_task` - Interactive interpreter
+- `repl_task` - Serial-connected interactive interpreter
+- `telnetd_task` spawns per-connection BASIC REPL sessions (see Telnet section)
+
+## Telnet
+
+The kernel can expose the BASIC REPL over telnet:
+- `telnetd_task` listens on TCP port 23
+- Each accepted connection spawns a new task running the REPL on that connection
+- The telnet terminal handles CRLF translation and basic IAC negotiation
+
+For QEMU user networking, forward a host port (example):
+```bash
+qemu-system-x86_64 ... \
+  -netdev user,id=net0,hostfwd=tcp::2323-:23 \
+  -device ne2k_isa,netdev=net0,irq=10,iobase=0x300
+```
 
 ## Network Subsystem
 
@@ -444,7 +481,7 @@ ISA-based NIC driver for QEMU's `ne2k_isa` device:
 ```bash
 # QEMU command
 qemu-system-x86_64 ... \
-  -netdev user,id=net0 \
+  -netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=tcp::2323-:23 \
   -device ne2k_isa,netdev=net0,irq=10,iobase=0x300
 ```
 
@@ -462,7 +499,7 @@ Full TCP state machine with:
 - All 11 TCP states (LISTEN, SYN_SENT, ESTABLISHED, etc.)
 - Three-way handshake
 - Graceful connection termination
-- Out-of-order segment buffering (4 segments max)
+- Out-of-order segment buffering (2 segments max)
 - RTT estimation (Jacobson/Karels algorithm)
 - Congestion control (Reno-like slow start/AIMD)
 - Fast retransmit on 3 duplicate ACKs
@@ -470,9 +507,9 @@ Full TCP state machine with:
 
 Configuration:
 ```rust
-MAX_CONNECTIONS: 4
-RX_BUFFER_SIZE: 2KB per connection
-TX_BUFFER_SIZE: 2KB per connection
+MAX_CONNECTIONS: 8
+RX_BUFFER_SIZE: 1024 bytes per connection
+TX_BUFFER_SIZE: 512 bytes per connection
 ```
 
 ### Network API (v4+)
